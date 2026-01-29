@@ -1,7 +1,20 @@
 
 #include "uec_mp.h"
 
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <stdexcept>
+
+namespace {
+void tokenize(const std::string& str, char delim, std::vector<std::string>& out) {
+    std::stringstream ss(str);
+    std::string s;
+    while (std::getline(ss, s, delim)) {
+        out.push_back(s);
+    }
+}
+}  // namespace
 
 
 UecMpOblivious::UecMpOblivious(uint16_t no_of_paths,
@@ -23,11 +36,11 @@ UecMpOblivious::UecMpOblivious(uint16_t no_of_paths,
             << endl;
 }
 
-void UecMpOblivious::processEv(uint16_t path_id, PathFeedback feedback) {
+void UecMpOblivious::processEv(uint32_t path_id, PathFeedback feedback) {
     return;
 }
 
-uint16_t UecMpOblivious::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
+uint32_t UecMpOblivious::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
     // _no_of_paths must be a power of 2
     uint16_t mask = _no_of_paths - 1;
     uint16_t entropy = (_current_ev_index ^ _path_xor) & mask;
@@ -72,7 +85,7 @@ UecMpBitmap::UecMpBitmap(uint16_t no_of_paths, bool debug)
             << endl;
 }
 
-void UecMpBitmap::processEv(uint16_t path_id, PathFeedback feedback) {
+void UecMpBitmap::processEv(uint32_t path_id, PathFeedback feedback) {
     // _no_of_paths must be a power of 2
     uint16_t mask = _no_of_paths - 1;
     path_id &= mask;  // only take the relevant bits for an index
@@ -95,7 +108,7 @@ void UecMpBitmap::processEv(uint16_t path_id, PathFeedback feedback) {
     }
 }
 
-uint16_t UecMpBitmap::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
+uint32_t UecMpBitmap::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
     // _no_of_paths must be a power of 2
     uint16_t mask = _no_of_paths - 1;
     uint16_t entropy = (_current_ev_index ^ _path_xor) & mask;
@@ -149,7 +162,7 @@ UecMpReps::UecMpReps(uint16_t no_of_paths, bool debug, bool is_trimming_enabled)
             << endl;
 }
 
-void UecMpReps::processEv(uint16_t path_id, PathFeedback feedback) {
+void UecMpReps::processEv(uint32_t path_id, PathFeedback feedback) {
 
     if ((feedback == PATH_TIMEOUT) && !circular_buffer_reps->isFrozenMode() && circular_buffer_reps->explore_counter == 0) {
         if (_is_trimming_enabled) { // If we have trimming enabled
@@ -174,7 +187,7 @@ void UecMpReps::processEv(uint16_t path_id, PathFeedback feedback) {
     }
 }
 
-uint16_t UecMpReps::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
+uint32_t UecMpReps::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
     if (circular_buffer_reps->explore_counter > 0) {
         circular_buffer_reps->explore_counter--;
         return rand() % _no_of_paths;
@@ -208,7 +221,7 @@ UecMpRepsLegacy::UecMpRepsLegacy(uint16_t no_of_paths, bool debug)
             << endl;
 }
 
-void UecMpRepsLegacy::processEv(uint16_t path_id, PathFeedback feedback) {
+void UecMpRepsLegacy::processEv(uint32_t path_id, PathFeedback feedback) {
     if (feedback == PATH_GOOD){
         _next_pathid.push_back(path_id);
         if (_debug){
@@ -217,7 +230,7 @@ void UecMpRepsLegacy::processEv(uint16_t path_id, PathFeedback feedback) {
     }
 }
 
-uint16_t UecMpRepsLegacy::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
+uint32_t UecMpRepsLegacy::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
     if (seq_sent < min(cur_cwnd_in_pkts, (uint64_t)_no_of_paths)) {
         _crt_path++;
         if (_crt_path == _no_of_paths) {
@@ -247,7 +260,7 @@ uint16_t UecMpRepsLegacy::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pk
     return _crt_path;
 }
 
-optional<uint16_t> UecMpRepsLegacy::nextEntropyRecycle() {
+optional<uint32_t> UecMpRepsLegacy::nextEntropyRecycle() {
     if (_next_pathid.empty()) {
         return {};
     } else {
@@ -273,12 +286,12 @@ void UecMpMixed::set_debug_tag(string debug_tag) {
     _reps_legacy.set_debug_tag(debug_tag);
 }
 
-void UecMpMixed::processEv(uint16_t path_id, PathFeedback feedback) {
+void UecMpMixed::processEv(uint32_t path_id, PathFeedback feedback) {
     _bitmap.processEv(path_id, feedback);
     _reps_legacy.processEv(path_id, feedback);
 }
 
-uint16_t UecMpMixed::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
+uint32_t UecMpMixed::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
     auto reps_val = _reps_legacy.nextEntropyRecycle();
     if (reps_val.has_value()) {
         return reps_val.value();
@@ -298,12 +311,84 @@ UecMpEcmp::UecMpEcmp(uint16_t no_of_paths, bool debug)
     _crt_path = rand() % no_of_paths;
 }
 
-void UecMpEcmp::processEv(uint16_t path_id, PathFeedback feedback) {
+void UecMpEcmp::processEv(uint32_t path_id, PathFeedback feedback) {
     // No OP in ECMP
     return;
 }
 
-uint16_t UecMpEcmp::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
+uint32_t UecMpEcmp::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
     // Always same path for a given flow in ECMP
     return _crt_path;
+}
+
+UecMpSource::UecMpSource(const string& base_host_table_path,
+                         uint32_t src,
+                         uint32_t dst,
+                         uint32_t hosts_per_switch,
+                         bool debug)
+    : UecMultipath(debug),
+      _paths(),
+      _rng(src * 2654435761U + dst),
+      _dist(0, 0) {
+    if (hosts_per_switch == 0) {
+        throw std::logic_error("hosts_per_switch must be > 0");
+    }
+
+    uint32_t src_switch = src / hosts_per_switch;
+    uint32_t dst_switch = dst / hosts_per_switch;
+    if (src_switch == dst_switch) {
+        _paths.push_back(0);
+        _dist = std::uniform_int_distribution<size_t>(0, _paths.size() - 1);
+        return;
+    }
+
+    std::string file_path = base_host_table_path + "/host_table/" + std::to_string(src_switch) + ".lt";
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "ERROR: Could not open: " << file_path << std::endl;
+        exit(-1);
+    }
+
+    std::string line;
+    bool dst_entry_found = false;
+    while (!dst_entry_found && std::getline(file, line)) {
+        std::vector<std::string> tokens;
+        tokenize(line, ' ', tokens);
+        if (tokens.size() == 1 && std::stoul(tokens[0]) == dst_switch)
+            dst_entry_found = true;
+    }
+
+    if (!dst_entry_found) {
+        std::cerr << "ERROR: host table missing destination entry for switch " << dst_switch << std::endl;
+        exit(-1);
+    }
+
+    while (std::getline(file, line)) {
+        std::vector<std::string> tokens;
+        tokenize(line, ' ', tokens);
+        if (tokens.size() < 2)
+            break;
+        for (std::size_t i = 2; i + 1 < tokens.size(); i += 2) {
+            uint32_t hop_one_switch = static_cast<uint32_t>(std::stoul(tokens[i]));
+            uint32_t hop_two_switch = static_cast<uint32_t>(std::stoul(tokens[i + 1]));
+            uint32_t encoded_path_id = ((hop_one_switch & 0xFFFF) << 16) | (hop_two_switch & 0xFFFF);
+            _paths.push_back(encoded_path_id);
+        }
+    }
+
+    if (_paths.empty()) {
+        std::cerr << "ERROR: no source paths loaded for " << src_switch
+                  << " -> " << dst_switch << std::endl;
+        exit(-1);
+    }
+
+    _dist = std::uniform_int_distribution<size_t>(0, _paths.size() - 1);
+}
+
+void UecMpSource::processEv(uint32_t path_id, PathFeedback feedback) {
+    return;
+}
+
+uint32_t UecMpSource::nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) {
+    return _paths[_dist(_rng)];
 }

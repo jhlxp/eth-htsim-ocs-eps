@@ -72,7 +72,7 @@ class Packet {
     
     /* empty constructor; Packet::set must always be called as
        well. It's a separate method, for convenient reuse */
-    Packet() {_is_header = false; _bounced = false; _type = IP; _flags = 0; _refcount = 0; _dst = UINT32_MAX; _pathid = UINT32_MAX; _direction = NONE; _ingressqueue = NULL;} 
+    Packet() {_is_header = false; _bounced = false; _type = IP; _flags = 0; _refcount = 0; _src = UINT32_MAX; _dst = UINT32_MAX; _pathid = UINT32_MAX; _direction = NONE; _ingressqueue = NULL;} 
 
     /* say "this packet is no longer wanted". (doesn't necessarily
        destroy it, so it can be reused) */
@@ -111,6 +111,8 @@ class Packet {
     virtual ~Packet() {};
     inline const packetid_t id() const {return _id;}
     inline uint32_t flow_id() const {return _flow->flow_id();}
+    inline uint32_t src() const {return _src;}
+    inline void set_src(uint32_t src) { _src = src;}
     inline uint32_t dst() const {return _dst;}
     inline void set_dst(uint32_t dst) { _dst = dst;}
     inline uint32_t pathid() {
@@ -185,6 +187,7 @@ class Packet {
     bool _bounced; // packet has hit a full queue, and is being bounced back to the sender
     uint32_t _flags; // used for ECN & friends
 
+    uint32_t _src; //used for packets that do not have a route in switched networks.
     uint32_t _dst; //used for packets that do not have a route in switched networks.    
     uint32_t _pathid;  //used for ECMP hashing.
     packet_direction _direction; //used to avoid loop in FatTrees.   

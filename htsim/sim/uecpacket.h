@@ -142,7 +142,7 @@ protected:
 class UecPullPacket : public UecBasePacket {
     using Packet::set_route;
 public:
-    inline static UecPullPacket* newpkt(PacketFlow& flow, const route_t* route, pull_quanta pullno, uint16_t ev,uint32_t destination = UINT32_MAX) {
+    inline static UecPullPacket* newpkt(PacketFlow& flow, const route_t* route, pull_quanta pullno, uint32_t ev,uint32_t destination = UINT32_MAX) {
         UecPullPacket* p = _packetdb.allocPacket();
         p->set_attrs(flow, ACKSIZE, 0);
         if (route) {
@@ -191,7 +191,7 @@ class UecAckPacket : public UecBasePacket {
 public:
     inline static UecAckPacket* newpkt(PacketFlow &flow, const Route *route, 
                                         seq_t cumulative_ack, seq_t ref_ack, seq_t acked_psn,/*pull_quanta pullno,*/
-                                        uint16_t path_id, bool ecn_marked, uint64_t recv_bytes, uint8_t rcv_wnd_pen,
+                                        uint32_t path_id, bool ecn_marked, uint64_t recv_bytes, uint8_t rcv_wnd_pen,
                                         uint32_t destination = UINT32_MAX) {
         UecAckPacket* p = _packetdb.allocPacket();
         p->set_attrs(flow, ACKSIZE, 0);
@@ -235,7 +235,7 @@ public:
 
     inline void set_bitmap(uint64_t bitmap){_sack_bitmap = bitmap;};
     /* inline pull_quanta pullno() const {return _pullno;}*/
-    uint16_t  ev() const {return _ev;}
+    uint32_t  ev() const {return _ev;}
     inline bool ecn_echo() const {return _ecn_echo;}
     uint64_t bitmap() const {return _sack_bitmap;}
     virtual PktPriority priority() const {return Packet::PRIO_HI;}
@@ -255,7 +255,7 @@ protected:
 
     //SACK bitmap here 
     uint64_t _sack_bitmap;
-    uint16_t _ev; //path id for the packet that triggered the SACK 
+    uint32_t _ev; //path id for the packet that triggered the SACK 
 
     uint64_t _recvd_bytes;
     uint8_t _rcv_cwnd_pen;
@@ -276,7 +276,7 @@ class UecNackPacket : public UecBasePacket {
 public:
     inline static UecNackPacket* newpkt(PacketFlow &flow, const Route *route, 
                                          seq_t ref_epsn, /*pull_quanta pullno, */
-                                         uint16_t path_id,uint64_t recv_bytes, uint64_t tbytes,
+                                         uint32_t path_id,uint64_t recv_bytes, uint64_t tbytes,
                                          uint32_t destination = UINT32_MAX) {
         UecNackPacket* p = _packetdb.allocPacket();
         p->set_attrs(flow, ACKSIZE, ref_epsn);
@@ -310,7 +310,7 @@ public:
     void free() {set_pathid(UINT32_MAX), _packetdb.freePacket(this);}
     inline seq_t ref_ack() const {return _ref_epsn;}
     //inline pull_quanta pullno() const {return _pullno;}
-    uint16_t ev() const {return _ev;}
+    uint32_t ev() const {return _ev;}
     inline void set_ecn_echo(bool ecn_echo) {_ecn_echo = ecn_echo;}
     inline bool ecn_echo() const {return _ecn_echo;}
     inline uint64_t recvd_bytes() const {return _recvd_bytes;}
@@ -325,7 +325,7 @@ public:
 protected:
     seq_t _ref_epsn;
     //pull_quanta _pullno;
-    uint16_t _ev;
+    uint32_t _ev;
     uint64_t _recvd_bytes;
     uint64_t _target_bytes;
     bool _last_hop;

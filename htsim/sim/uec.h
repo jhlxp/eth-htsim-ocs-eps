@@ -6,6 +6,8 @@
 #include <list>
 #include <set>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "uec_base.h"
 #include "eventlist.h"
@@ -535,9 +537,9 @@ class UecSink : public DataReceiver {
     UecBasePacket::seq_t sackBitmapBase(UecBasePacket::seq_t epsn);
     UecBasePacket::seq_t sackBitmapBaseIdeal();
     uint64_t buildSackBitmap(UecBasePacket::seq_t ref_epsn);
-    UecAckPacket* sack(uint16_t path_id, UecBasePacket::seq_t seqno, UecBasePacket::seq_t acked_psn, bool ce, bool rtx_echo);
+    UecAckPacket* sack(uint32_t path_id, UecBasePacket::seq_t seqno, UecBasePacket::seq_t acked_psn, bool ce, bool rtx_echo);
 
-    UecNackPacket* nack(uint16_t path_id, UecBasePacket::seq_t seqno, bool last_hop, bool ecn_echo);
+    UecNackPacket* nack(uint32_t path_id, UecBasePacket::seq_t seqno, bool last_hop, bool ecn_echo);
 
     UecBasePacket::pull_quanta backlog() {
         if (_highest_pull_target > _latest_pull)
@@ -558,6 +560,7 @@ class UecSink : public DataReceiver {
     const Route* getPortRoute(uint32_t port_num) const {return _ports[port_num]->route();}
     UecSinkPort* getPort(uint32_t port_num) {return _ports[port_num];}
     void setSrc(uint32_t s) { _srcaddr = s; }
+    void setDst(uint32_t dst);
     inline void setFlowId(flowid_t flow_id) { _flow.set_flowid(flow_id); }
 
     inline bool inPullQueue() const { return _in_pull; }
@@ -578,7 +581,7 @@ class UecSink : public DataReceiver {
     inline void setPCIeModel(PCIeModel* c){assert(_model_pcie); _pcie = c;}
     inline void setOversubscribedCC(OversubscribedCC* c){_receiver_cc = c;}
 
-    uint16_t nextEntropy();
+    uint32_t nextEntropy();
 
     UecSrc* getSrc() { return _src; }
     uint32_t getConfiguredMaxWnd() { return _src->configuredMaxWnd(); };
@@ -591,6 +594,8 @@ class UecSink : public DataReceiver {
     static int TGT_EV_SIZE;
 
     static bool _receiver_oversubscribed_cc; 
+    static void setHostTablePath(const std::string& path) { _base_host_table_path = path; }
+    static void setHostTableP(uint32_t hosts_per_switch) { _p = hosts_per_switch; }
 
     // for sink logger
     inline mem_b total_received() const { return _stats.bytes_received; }
@@ -630,6 +635,7 @@ class UecSink : public DataReceiver {
     uint32_t _no_of_ports;
     vector <UecSinkPort*> _ports;
     uint32_t _srcaddr;
+    uint32_t _dstaddr;
     UecNIC& _nic;
     UecSrc* _src;
     PacketFlow _flow;
@@ -664,6 +670,7 @@ class UecSink : public DataReceiver {
     bool _ack_request;
 
     uint16_t _entropy;
+    std::vector<uint32_t> _paths;
 
     //variables for PCIe model
     PCIeModel* _pcie;
@@ -675,6 +682,8 @@ class UecSink : public DataReceiver {
 public:
     static bool _oversubscribed_cc;
     static bool _model_pcie;
+    static std::string _base_host_table_path;
+    static uint32_t _p;
 };
 
 class UecPullPacer : public EventSource {

@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
     simtime_picosec switch_latency = timeFromUs((uint32_t)0);
     queue_type qt = COMPOSITE;
 
-    enum LoadBalancing_Algo { BITMAP, REPS, REPS_LEGACY, OBLIVIOUS, MIXED, ECMP};
+    enum LoadBalancing_Algo { BITMAP, REPS, REPS_LEGACY, FREEZING, OBLIVIOUS, MIXED, ECMP};
     LoadBalancing_Algo load_balancing_algo = MIXED;
 
     bool log_sink = false;
@@ -230,6 +230,9 @@ int main(int argc, char **argv) {
             else if (!strcmp(argv[i+1], "reps_legacy")) {
                 load_balancing_algo = REPS_LEGACY;
             }
+            else if (!strcmp(argv[i+1], "freezing")) {
+                load_balancing_algo = FREEZING;
+            }
             else if (!strcmp(argv[i+1], "oblivious")) {
                 load_balancing_algo = OBLIVIOUS;
             }
@@ -243,7 +246,7 @@ int main(int argc, char **argv) {
                 load_balancing_algo = ECMP;
             }
             else {
-                cout << "Unknown load balancing algorithm of type " << argv[i+1] << ", expecting bitmap, reps or reps2" << endl;
+                cout << "Unknown load balancing algorithm of type " << argv[i+1] << ", expecting bitmap, reps, reps_legacy, freezing, oblivious, mixed, or ecmp" << endl;
                 exit_error(argv[0]);
             }
             cout << "Load balancing algorithm set to  "<< argv[i+1] << endl;
@@ -820,13 +823,14 @@ int main(int argc, char **argv) {
                 });
                 break;
             case REPS:
-                api->setMultipathFactory([path_entropy_size, disable_trim]() {
-                    return std::make_unique<UecMpReps>(path_entropy_size, UecSrc::_debug, !disable_trim);
-                });
-                break;
             case REPS_LEGACY:
                 api->setMultipathFactory([path_entropy_size]() {
                     return std::make_unique<UecMpRepsLegacy>(path_entropy_size, UecSrc::_debug);
+                });
+                break;
+            case FREEZING:
+                api->setMultipathFactory([path_entropy_size, disable_trim]() {
+                    return std::make_unique<UecMpReps>(path_entropy_size, UecSrc::_debug, !disable_trim);
                 });
                 break;
             case OBLIVIOUS:
@@ -893,10 +897,10 @@ int main(int argc, char **argv) {
             unique_ptr<UecMultipath> mp = nullptr;
             if (load_balancing_algo == BITMAP){
                 mp = make_unique<UecMpBitmap>(path_entropy_size, UecSrc::_debug);
-            } else if (load_balancing_algo == REPS){
-                mp = make_unique<UecMpReps>(path_entropy_size, UecSrc::_debug, !disable_trim);
-            } else if (load_balancing_algo == REPS_LEGACY){
+            } else if (load_balancing_algo == REPS || load_balancing_algo == REPS_LEGACY){
                 mp = make_unique<UecMpRepsLegacy>(path_entropy_size, UecSrc::_debug);
+            } else if (load_balancing_algo == FREEZING){
+                mp = make_unique<UecMpReps>(path_entropy_size, UecSrc::_debug, !disable_trim);
             }else if (load_balancing_algo == OBLIVIOUS){
                 mp = make_unique<UecMpOblivious>(path_entropy_size, UecSrc::_debug);
             } else if (load_balancing_algo == MIXED){

@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
     srand(seed);
     srandom(seed);
 
-    enum LoadBalancing_Algo { BITMAP, REPS, REPS_LEGACY, OBLIVIOUS, MIXED, ECMP };
+    enum LoadBalancing_Algo { BITMAP, REPS, REPS_LEGACY, FREEZING, OBLIVIOUS, MIXED, ECMP };
 
     // Commandline Arguments
     SlimFlySwitch::RoutingStrategy routing_strategy = SlimFlySwitch::MINIMAL;
@@ -110,6 +110,8 @@ int main(int argc, char** argv) {
                 load_balancing_algo = REPS;
             else if (!strcmp(argv[i + 1], "reps_legacy"))
                 load_balancing_algo = REPS_LEGACY;
+            else if (!strcmp(argv[i + 1], "freezing"))
+                load_balancing_algo = FREEZING;
             else if (!strcmp(argv[i + 1], "oblivious"))
                 load_balancing_algo = OBLIVIOUS;
             else if (!strcmp(argv[i + 1], "mixed"))
@@ -265,10 +267,10 @@ int main(int argc, char** argv) {
             mp = std::make_unique<UecMpSource>(host_table_base_path, src, dest, topo->get_p(), UecSrc::_debug);
         } else if (load_balancing_algo == BITMAP) {
             mp = std::make_unique<UecMpBitmap>(path_entropy_size, UecSrc::_debug);
-        } else if (load_balancing_algo == REPS) {
-            mp = std::make_unique<UecMpReps>(path_entropy_size, UecSrc::_debug, !trim_disable);
-        } else if (load_balancing_algo == REPS_LEGACY) {
+        } else if (load_balancing_algo == REPS || load_balancing_algo == REPS_LEGACY) {
             mp = std::make_unique<UecMpRepsLegacy>(path_entropy_size, UecSrc::_debug);
+        } else if (load_balancing_algo == FREEZING) {
+            mp = std::make_unique<UecMpReps>(path_entropy_size, UecSrc::_debug, !trim_disable);
         } else if (load_balancing_algo == OBLIVIOUS) {
             mp = std::make_unique<UecMpOblivious>(path_entropy_size, UecSrc::_debug);
         } else if (load_balancing_algo == MIXED) {

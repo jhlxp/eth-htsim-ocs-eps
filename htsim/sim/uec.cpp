@@ -834,7 +834,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
     } else { 
         if (_msg_tracker.has_value()) {
             if (_msg_tracker.value()->checkFinished()) {
-                /* cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
+                cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
                     << " finished at " << timeAsUs(eventlist().now()) 
                     << " total messages " << _msg_tracker.value()->getMsgCompleted()
                     << " total packets " << cum_ack 
@@ -848,7 +848,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
                     << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
                     << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
                     << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
-                    << endl; */
+                    << endl;
                 cancelRTO();
                 _done_sending = true;
 
@@ -865,7 +865,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
             }
         } else {
             if ((((int64_t)cum_ack - _stats.rts_pkts_sent) * _mss) >= (int64_t)_flow_size) {
-                /* cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
+                cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
                     << " finished at " << timeAsUs(eventlist().now()) 
                     << " total messages " << 1 
                     << " total packets " << cum_ack 
@@ -879,7 +879,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
                     << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
                     << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
                     << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
-                    << endl; */
+                    << endl;
                 _speculating = false;
                 if (_end_trigger) {
                     _end_trigger->activate();

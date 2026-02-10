@@ -3,6 +3,7 @@
 This repository is a SPCL fork of the official UEC repository. We plan to support these features on top of the UE code:
 
 - ATLAHS integration to run GOAL files.
+- Custom network topologies: Dragonfly and SlimFly (in addition to Fat Tree).
 - Implementation of REPS and SMaRTT.
 - Implementation of PCM logic (in progress).
 - Loss Recovery algorithms such as PFLD.
@@ -53,19 +54,49 @@ UEC's htsim is not:
 
 Check the [README](htsim/README.md) file in the `htsim/` folder.
 
-# Changing topology (brief)
+# Supported Topologies
 
-Most datacenter binaries accept a topology path. To switch topology, point the `-topo` (or `-basepath` for Dragonfly) flag to a different topology folder or `.topo` file.
+The simulator supports three network topologies, each with a dedicated binary:
 
-Example (Dragonfly):
-```
-./htsim_uec_df -routing SOURCE -basepath htsim/sim/datacenter/topologies/dragonfly/p3a6h3 -tm htsim/sim/datacenter/connection_matrices/dragonfly_single_342.tm
+### Fat Tree (default) — `htsim_uec`
+
+The default topology. Specify a `.topo` file with `-topo`, or omit it to use a default 3-tier fat tree.
+
+```bash
+./htsim_uec -topo htsim/sim/datacenter/topologies/fat_tree_1024_1os.topo -tm connection_matrices/incast_2-1.tm
 ```
 
-Example (non-Dragonfly):
+### Dragonfly — `htsim_uec_df`
+
+Uses `-basepath` to point to a topology directory containing `dragonfly.topo`, `dragonfly.adjlist`, and a `host_table/` folder. Pre-generated assets are in `topologies/dragonfly/` (e.g., `p3a6h3`, `p4a8h4`).
+
+Routing strategies: `MINIMAL`, `VALIANT`, `UGAL_L`, `SOURCE`
+
+```bash
+./htsim_uec_df -basepath htsim/sim/datacenter/topologies/dragonfly/p3a6h3 -tm traffic.tm -routing MINIMAL -q 88
 ```
-./htsim_uec -topo htsim/sim/datacenter/topologies/fat_tree_1024_1os.topo -tm htsim/sim/datacenter/connection_matrices/incast_2-1.tm
+
+### SlimFly — `htsim_uec_sf`
+
+Uses `-topo` to point to a topology directory containing `slimfly.topo`, `slimfly.adjlist`, and a `host_table/` folder. Pre-generated assets are in `topologies/slimfly/` (e.g., `p4q5`, `p7q9`).
+
+Routing strategies: `MINIMAL`, `VALIANT`, `UGAL_L`, `SOURCE`
+
+```bash
+./htsim_uec_sf -topo htsim/sim/datacenter/topologies/slimfly/p4q5 -tm traffic.tm -routing MINIMAL -q 88
 ```
+
+### Traffic Matrix Format
+
+All topologies use the same traffic matrix format:
+
+```
+Nodes <N>
+Connections <M>
+<src>-><dst> start <picoseconds> size <bytes>
+```
+
+For more details, see [htsim/README.md](htsim/README.md).
 
 
 # References

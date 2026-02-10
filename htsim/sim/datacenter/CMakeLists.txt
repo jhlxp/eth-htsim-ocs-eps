@@ -13,6 +13,8 @@ set(LIB_SOURCES
     dragon_fly_topology.cpp
     slimfly_topology.cpp
     slimfly_switch.cpp
+    dragonfly_topology.cpp
+    dragonfly_switch.cpp
     generic_topology.cpp
 )
 
@@ -45,6 +47,7 @@ set_property(TARGET htsim_eqds PROPERTY EXCLUDE_FROM_ALL TRUE)
 
 add_executable(htsim_uec main_uec.cpp)
 add_executable(htsim_uec_sf main_uec_sf.cpp)
+add_executable(htsim_uec_df main_uec_df.cpp)
 
 # -------------------------------
 # Linking Executables with Libraries
@@ -58,6 +61,7 @@ set (ALL_EXECUTABLES
     htsim_eqds
     htsim_uec
     htsim_uec_sf
+    htsim_uec_df
 )
 foreach(EXECUTABLE ${ALL_EXECUTABLES})
     # Link each executable with the 'htsim' library defined in the parent directory.

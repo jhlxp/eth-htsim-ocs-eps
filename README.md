@@ -53,6 +53,20 @@ UEC's htsim is not:
 
 Check the [README](htsim/README.md) file in the `htsim/` folder.
 
+# Changing topology (brief)
+
+Most datacenter binaries accept a topology path. To switch topology, point the `-topo` (or `-basepath` for Dragonfly) flag to a different topology folder or `.topo` file.
+
+Example (Dragonfly):
+```
+./htsim_uec_df -routing SOURCE -basepath htsim/sim/datacenter/topologies/dragonfly/p3a6h3 -tm htsim/sim/datacenter/connection_matrices/dragonfly_single_342.tm
+```
+
+Example (non-Dragonfly):
+```
+./htsim_uec -topo htsim/sim/datacenter/topologies/fat_tree_1024_1os.topo -tm htsim/sim/datacenter/connection_matrices/incast_2-1.tm
+```
+
 
 # References
 If you use ATLAHS for your research, please cite our paper using:

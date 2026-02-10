@@ -1569,7 +1569,7 @@ void UecSrc::processNack(const UecNackPacket& pkt) {
              << endl;
     }
 
-    uint16_t ev = pkt.ev();
+    uint32_t ev = pkt.ev();
     // what should we do when we get a NACK with ECN_ECHO set?  Presumably ECE is superfluous?
     // bool ecn_echo = pkt.ecn_echo();
 
@@ -2118,6 +2118,7 @@ mem_b UecSrc::sendNewPacket(const Route& route) {
 
     auto* p = UecDataPacket::newpkt(_flow, route, _highest_sent, full_pkt_size, ptype,
                                      _pull_target, _dstaddr);
+    p->set_src(_srcaddr);
 
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
@@ -2163,6 +2164,7 @@ mem_b UecSrc::sendRtxPacket(const Route& route) {
     
     auto* p = UecDataPacket::newpkt(_flow, route, seq_no, full_pkt_size, UecDataPacket::DATA_RTX,
                                      _pull_target, _dstaddr);
+    p->set_src(_srcaddr);
 
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
@@ -2195,6 +2197,7 @@ void UecSrc::sendProbe() {
     _probe_seqno++;
     auto* p = UecDataPacket::newpkt(_flow, NULL, _probe_seqno, _hdr_size,
                                     UecBasePacket::DATA_PROBE, 0, _dstaddr);
+    p->set_src(_srcaddr);
     p->set_dst(_dstaddr);
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
@@ -2225,6 +2228,7 @@ void UecSrc::sendRTS() {
     createSendRecord(_highest_sent, _hdr_size);
     auto* p =
         UecRtsPacket::newpkt(_flow, NULL, _highest_sent, _pull_target, _dstaddr);
+    p->set_src(_srcaddr);
 
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
@@ -2635,6 +2639,62 @@ UecSink::UecSink(TrafficLogger* trafficLogger,
     _receiver_cc = NULL;
 }
 
+void UecSink::setDst(uint32_t dst) {
+    _dstaddr = dst;
+    if (_base_host_table_path.empty() || _p == 0) {
+        return;
+    }
+
+    _paths.clear();
+
+    uint32_t src_switch = _dstaddr / _p;  // dst -> src
+    uint32_t dst_switch = _srcaddr / _p;  // src -> dst
+    if (src_switch == dst_switch) {
+        _paths.push_back(0);
+        return;
+    }
+
+    std::string file_path = _base_host_table_path + "/host_table/" + std::to_string(src_switch) + ".lt";
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "ERROR: Could not open: " << file_path << std::endl;
+        exit(-1);
+    }
+
+    std::string line;
+    bool dst_entry_found = false;
+    while (!dst_entry_found && std::getline(file, line)) {
+        vector<string> tokens;
+        tokenize(line, ' ', tokens);
+        if (tokens.size() == 1 && std::stoul(tokens[0]) == dst_switch)
+            dst_entry_found = true;
+    }
+
+    if (!dst_entry_found) {
+        std::cerr << "ERROR: host table missing destination entry for switch " << dst_switch << std::endl;
+        exit(-1);
+    }
+
+    while (std::getline(file, line)) {
+        vector<string> tokens;
+        tokenize(line, ' ', tokens);
+        if (tokens.size() < 2)
+            break;
+        for (std::size_t i = 2; i + 1 < tokens.size(); i += 2) {
+            uint32_t hop_one_switch = static_cast<uint32_t>(std::stoul(tokens[i]));
+            uint32_t hop_two_switch = static_cast<uint32_t>(std::stoul(tokens[i + 1]));
+            uint32_t encoded_path_id = ((hop_one_switch & 0xFFFF) << 16) | (hop_two_switch & 0xFFFF);
+            _paths.push_back(encoded_path_id);
+        }
+    }
+
+    if (_paths.empty()) {
+        std::cerr << "ERROR: no source paths loaded for " << src_switch
+                  << " -> " << dst_switch << std::endl;
+        exit(-1);
+    }
+}
+
 void UecSink::connectPort(uint32_t port_num, UecSrc& src, const Route& route) {
     _src = &src;
     _ports[port_num]->setRoute(route);
@@ -3041,6 +3101,7 @@ UecPullPacket* UecSink::pull(UecBasePacket::pull_quanta& extra_credit) {
     UecPullPacket* pkt = NULL;
     pkt = UecPullPacket::newpkt(_flow, NULL, _latest_pull, false, _srcaddr);
     pkt->set_pathid(nextEntropy());
+    pkt->set_src(_dstaddr);
 
     return pkt;
 }
@@ -3101,6 +3162,7 @@ UecAckPacket* UecSink::sack(uint32_t path_id, UecBasePacket::seq_t seqno, UecBas
     uint64_t bitmap = buildSackBitmap(seqno);
     UecAckPacket* pkt =
         UecAckPacket::newpkt(_flow, NULL, _expected_epsn, seqno, acked_psn, path_id, ce, _recvd_bytes,_rcv_cwnd_pen,_srcaddr);
+    pkt->set_src(_dstaddr);
     pkt->set_bitmap(bitmap);
     pkt->set_ooo(_out_of_order_count);
     pkt->set_rtx_echo(rtx_echo);
@@ -3110,6 +3172,7 @@ UecAckPacket* UecSink::sack(uint32_t path_id, UecBasePacket::seq_t seqno, UecBas
 
 UecNackPacket* UecSink::nack(uint32_t path_id, UecBasePacket::seq_t seqno,bool last_hop, bool ecn_echo) {
     UecNackPacket* pkt = UecNackPacket::newpkt(_flow, NULL, seqno, path_id,  _recvd_bytes,_rcv_cwnd_pen,_srcaddr);
+    pkt->set_src(_dstaddr);
     pkt->set_last_hop(last_hop);
     pkt->set_ecn_echo(ecn_echo);
     return pkt;

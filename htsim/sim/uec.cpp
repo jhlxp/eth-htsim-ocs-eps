@@ -2122,6 +2122,7 @@ mem_b UecSrc::sendNewPacket(const Route& route) {
 
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
+    p->set_hop_count(0);
     p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
 
     if (_backlog == 0 || (_receiver_based_cc && _credit <= 0) || ( _sender_based_cc &&  (_in_flight + full_pkt_size) >= _cwnd )) 
@@ -2168,6 +2169,7 @@ mem_b UecSrc::sendRtxPacket(const Route& route) {
 
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
+    p->set_hop_count(0);
     p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
 
     createSendRecord(seq_no, full_pkt_size);
@@ -2201,6 +2203,7 @@ void UecSrc::sendProbe() {
     p->set_dst(_dstaddr);
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
+    p->set_hop_count(0);
     // p->sendOn();
     _nic.sendControlPacket(p, this, NULL);
 
@@ -2232,6 +2235,7 @@ void UecSrc::sendRTS() {
 
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
+    p->set_hop_count(0);
 
     // p->sendOn();
     _nic.sendControlPacket(p, this, NULL);
@@ -3045,6 +3049,7 @@ UecPullPacket* UecSink::pull(UecBasePacket::pull_quanta& extra_credit) {
     UecPullPacket* pkt = NULL;
     pkt = UecPullPacket::newpkt(_flow, NULL, _latest_pull, false, _srcaddr);
     pkt->set_pathid(nextEntropy());
+    pkt->set_hop_count(0);
     pkt->set_src(_dstaddr);
 
     return pkt;
@@ -3111,6 +3116,7 @@ UecAckPacket* UecSink::sack(uint32_t path_id, UecBasePacket::seq_t seqno, UecBas
     pkt->set_ooo(_out_of_order_count);
     pkt->set_rtx_echo(rtx_echo);
     pkt->set_probe_ack(false);
+    pkt->set_hop_count(0);
     return pkt;
 }
 
@@ -3119,6 +3125,7 @@ UecNackPacket* UecSink::nack(uint32_t path_id, UecBasePacket::seq_t seqno,bool l
     pkt->set_src(_dstaddr);
     pkt->set_last_hop(last_hop);
     pkt->set_ecn_echo(ecn_echo);
+    pkt->set_hop_count(0);
     return pkt;
 }
 

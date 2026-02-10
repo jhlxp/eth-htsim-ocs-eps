@@ -2639,62 +2639,6 @@ UecSink::UecSink(TrafficLogger* trafficLogger,
     _receiver_cc = NULL;
 }
 
-void UecSink::setDst(uint32_t dst) {
-    _dstaddr = dst;
-    if (_base_host_table_path.empty() || _p == 0) {
-        return;
-    }
-
-    _paths.clear();
-
-    uint32_t src_switch = _dstaddr / _p;  // dst -> src
-    uint32_t dst_switch = _srcaddr / _p;  // src -> dst
-    if (src_switch == dst_switch) {
-        _paths.push_back(0);
-        return;
-    }
-
-    std::string file_path = _base_host_table_path + "/host_table/" + std::to_string(src_switch) + ".lt";
-    std::ifstream file(file_path);
-    if (!file.is_open()) {
-        std::cerr << "ERROR: Could not open: " << file_path << std::endl;
-        exit(-1);
-    }
-
-    std::string line;
-    bool dst_entry_found = false;
-    while (!dst_entry_found && std::getline(file, line)) {
-        vector<string> tokens;
-        tokenize(line, ' ', tokens);
-        if (tokens.size() == 1 && std::stoul(tokens[0]) == dst_switch)
-            dst_entry_found = true;
-    }
-
-    if (!dst_entry_found) {
-        std::cerr << "ERROR: host table missing destination entry for switch " << dst_switch << std::endl;
-        exit(-1);
-    }
-
-    while (std::getline(file, line)) {
-        vector<string> tokens;
-        tokenize(line, ' ', tokens);
-        if (tokens.size() < 2)
-            break;
-        for (std::size_t i = 2; i + 1 < tokens.size(); i += 2) {
-            uint32_t hop_one_switch = static_cast<uint32_t>(std::stoul(tokens[i]));
-            uint32_t hop_two_switch = static_cast<uint32_t>(std::stoul(tokens[i + 1]));
-            uint32_t encoded_path_id = ((hop_one_switch & 0xFFFF) << 16) | (hop_two_switch & 0xFFFF);
-            _paths.push_back(encoded_path_id);
-        }
-    }
-
-    if (_paths.empty()) {
-        std::cerr << "ERROR: no source paths loaded for " << src_switch
-                  << " -> " << dst_switch << std::endl;
-        exit(-1);
-    }
-}
-
 void UecSink::connectPort(uint32_t port_num, UecSrc& src, const Route& route) {
     _src = &src;
     _ports[port_num]->setRoute(route);

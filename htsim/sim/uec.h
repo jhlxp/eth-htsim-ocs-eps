@@ -597,9 +597,6 @@ class UecSink : public DataReceiver {
     static void setHostTablePath(const std::string& path) { _base_host_table_path = path; }
     static void setHostTableP(uint32_t hosts_per_switch) { _p = hosts_per_switch; }
 
-    static void setHostTablePath(const std::string& path) { _base_host_table_path = path; }
-    static void setHostTableP(uint32_t hosts_per_switch) { _p = hosts_per_switch; }
-
     // for sink logger
     inline mem_b total_received() const { return _stats.bytes_received; }
     uint32_t reorder_buffer_size();  // count is in packets

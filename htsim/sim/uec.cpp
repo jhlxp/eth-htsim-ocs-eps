@@ -2,11 +2,23 @@
 #include "uec.h"
 #include <math.h>
 #include <cstdint>
+#include <fstream>
+#include <sstream>
 #include "circular_buffer.h"
 #include "uec_logger.h"
 #include "pciemodel.h"
 
 using namespace std;
+
+namespace {
+void tokenize(const std::string& str, char delim, std::vector<std::string>& out) {
+    std::stringstream ss(str);
+    std::string s;
+    while (std::getline(ss, s, delim)) {
+        out.push_back(s);
+    }
+}
+}  // namespace
 
 // Static stuff
 flowid_t UecSrc::_debug_flowid = UINT32_MAX;
@@ -23,6 +35,8 @@ mem_b UecSink::_bytes_unacked_threshold = 16384;
 int UecSink::TGT_EV_SIZE = 7;
 
 bool UecSink::_model_pcie = false;
+std::string UecSink::_base_host_table_path = "";
+uint32_t UecSink::_p = 0;
 
 /* this default will be overridden from packet size*/
 uint16_t UecSrc::_hdr_size = 64;
@@ -820,7 +834,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
     } else { 
         if (_msg_tracker.has_value()) {
             if (_msg_tracker.value()->checkFinished()) {
-                /* cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
+                cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
                     << " finished at " << timeAsUs(eventlist().now()) 
                     << " total messages " << _msg_tracker.value()->getMsgCompleted()
                     << " total packets " << cum_ack 
@@ -834,7 +848,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
                     << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
                     << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
                     << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
-                    << endl; */
+                    << endl;
                 cancelRTO();
                 _done_sending = true;
 
@@ -851,7 +865,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
             }
         } else {
             if ((((int64_t)cum_ack - _stats.rts_pkts_sent) * _mss) >= (int64_t)_flow_size) {
-                /* cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
+                cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
                     << " finished at " << timeAsUs(eventlist().now()) 
                     << " total messages " << 1 
                     << " total packets " << cum_ack 
@@ -865,7 +879,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
                     << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
                     << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
                     << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
-                    << endl; */
+                    << endl;
                 _speculating = false;
                 if (_end_trigger) {
                     _end_trigger->activate();
@@ -1555,7 +1569,7 @@ void UecSrc::processNack(const UecNackPacket& pkt) {
              << endl;
     }
 
-    uint16_t ev = pkt.ev();
+    uint32_t ev = pkt.ev();
     // what should we do when we get a NACK with ECN_ECHO set?  Presumably ECE is superfluous?
     // bool ecn_echo = pkt.ecn_echo();
 
@@ -2104,8 +2118,9 @@ mem_b UecSrc::sendNewPacket(const Route& route) {
 
     auto* p = UecDataPacket::newpkt(_flow, route, _highest_sent, full_pkt_size, ptype,
                                      _pull_target, _dstaddr);
+    p->set_src(_srcaddr);
 
-    uint16_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
+    uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
     p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
 
@@ -2149,8 +2164,9 @@ mem_b UecSrc::sendRtxPacket(const Route& route) {
     
     auto* p = UecDataPacket::newpkt(_flow, route, seq_no, full_pkt_size, UecDataPacket::DATA_RTX,
                                      _pull_target, _dstaddr);
+    p->set_src(_srcaddr);
 
-    uint16_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
+    uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
     p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
 
@@ -2181,8 +2197,9 @@ void UecSrc::sendProbe() {
     _probe_seqno++;
     auto* p = UecDataPacket::newpkt(_flow, NULL, _probe_seqno, _hdr_size,
                                     UecBasePacket::DATA_PROBE, 0, _dstaddr);
+    p->set_src(_srcaddr);
     p->set_dst(_dstaddr);
-    uint16_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
+    uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
     // p->sendOn();
     _nic.sendControlPacket(p, this, NULL);
@@ -2211,8 +2228,9 @@ void UecSrc::sendRTS() {
     createSendRecord(_highest_sent, _hdr_size);
     auto* p =
         UecRtsPacket::newpkt(_flow, NULL, _highest_sent, _pull_target, _dstaddr);
+    p->set_src(_srcaddr);
 
-    uint16_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
+    uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
 
     // p->sendOn();
@@ -2486,9 +2504,10 @@ const string& UecSinkPort::nodename() {
 ////////////////////////////////////////////////////////////////
 
 UecSink::UecSink(TrafficLogger* trafficLogger, UecPullPacer* pullPacer, UecNIC& nic, uint32_t no_of_ports)
-    : DataReceiver("uecSink"),
-      _nic(nic),
-      _flow(trafficLogger),
+        : DataReceiver("uecSink"),
+            _nic(nic),
+            _flow(trafficLogger),
+            _dstaddr(UINT32_MAX),
       _pullPacer(pullPacer),
       _expected_epsn(0),
       _high_epsn(0),
@@ -2527,9 +2546,10 @@ UecSink::UecSink(TrafficLogger* trafficLogger,
                    EventList& eventList,
                    UecNIC& nic,
                    uint32_t no_of_ports)
-    : DataReceiver("uecSink"),
-      _nic(nic),
-      _flow(trafficLogger),
+        : DataReceiver("uecSink"),
+            _nic(nic),
+            _flow(trafficLogger),
+            _dstaddr(UINT32_MAX),
       _expected_epsn(0),
       _high_epsn(0),
       _retx_backlog(0),
@@ -2561,6 +2581,62 @@ UecSink::UecSink(TrafficLogger* trafficLogger,
 
     _pcie = NULL;
     _receiver_cc = NULL;
+}
+
+void UecSink::setDst(uint32_t dst) {
+    _dstaddr = dst;
+    if (_base_host_table_path.empty() || _p == 0) {
+        return;
+    }
+
+    _paths.clear();
+
+    uint32_t src_switch = _dstaddr / _p;  // dst -> src
+    uint32_t dst_switch = _srcaddr / _p;  // src -> dst
+    if (src_switch == dst_switch) {
+        _paths.push_back(0);
+        return;
+    }
+
+    std::string file_path = _base_host_table_path + "/host_table/" + std::to_string(src_switch) + ".lt";
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "ERROR: Could not open: " << file_path << std::endl;
+        exit(-1);
+    }
+
+    std::string line;
+    bool dst_entry_found = false;
+    while (!dst_entry_found && std::getline(file, line)) {
+        vector<string> tokens;
+        tokenize(line, ' ', tokens);
+        if (tokens.size() == 1 && std::stoul(tokens[0]) == dst_switch)
+            dst_entry_found = true;
+    }
+
+    if (!dst_entry_found) {
+        std::cerr << "ERROR: host table missing destination entry for switch " << dst_switch << std::endl;
+        exit(-1);
+    }
+
+    while (std::getline(file, line)) {
+        vector<string> tokens;
+        tokenize(line, ' ', tokens);
+        if (tokens.size() < 2)
+            break;
+        for (std::size_t i = 2; i + 1 < tokens.size(); i += 2) {
+            uint32_t hop_one_switch = static_cast<uint32_t>(std::stoul(tokens[i]));
+            uint32_t hop_two_switch = static_cast<uint32_t>(std::stoul(tokens[i + 1]));
+            uint32_t encoded_path_id = ((hop_one_switch & 0xFFFF) << 16) | (hop_two_switch & 0xFFFF);
+            _paths.push_back(encoded_path_id);
+        }
+    }
+
+    if (_paths.empty()) {
+        std::cerr << "ERROR: no source paths loaded for " << src_switch
+                  << " -> " << dst_switch << std::endl;
+        exit(-1);
+    }
 }
 
 void UecSink::connectPort(uint32_t port_num, UecSrc& src, const Route& route) {
@@ -2921,7 +2997,10 @@ void UecSink::receivePacket(Packet& pkt, uint32_t port_num) {
     }
 }
 
-uint16_t UecSink::nextEntropy() {
+uint32_t UecSink::nextEntropy() {
+    if (!_paths.empty()) {
+        return _paths.front();
+    }
     int spraymask = (1 << TGT_EV_SIZE) - 1;
     int fixedmask = ~spraymask;
     int idx = _entropy & spraymask;
@@ -2966,6 +3045,7 @@ UecPullPacket* UecSink::pull(UecBasePacket::pull_quanta& extra_credit) {
     UecPullPacket* pkt = NULL;
     pkt = UecPullPacket::newpkt(_flow, NULL, _latest_pull, false, _srcaddr);
     pkt->set_pathid(nextEntropy());
+    pkt->set_src(_dstaddr);
 
     return pkt;
 }
@@ -3022,10 +3102,11 @@ uint64_t UecSink::buildSackBitmap(UecBasePacket::seq_t ref_epsn) {
     return bitmap;
 }
 
-UecAckPacket* UecSink::sack(uint16_t path_id, UecBasePacket::seq_t seqno, UecBasePacket::seq_t acked_psn, bool ce, bool rtx_echo) {
+UecAckPacket* UecSink::sack(uint32_t path_id, UecBasePacket::seq_t seqno, UecBasePacket::seq_t acked_psn, bool ce, bool rtx_echo) {
     uint64_t bitmap = buildSackBitmap(seqno);
     UecAckPacket* pkt =
         UecAckPacket::newpkt(_flow, NULL, _expected_epsn, seqno, acked_psn, path_id, ce, _recvd_bytes,_rcv_cwnd_pen,_srcaddr);
+    pkt->set_src(_dstaddr);
     pkt->set_bitmap(bitmap);
     pkt->set_ooo(_out_of_order_count);
     pkt->set_rtx_echo(rtx_echo);
@@ -3033,8 +3114,9 @@ UecAckPacket* UecSink::sack(uint16_t path_id, UecBasePacket::seq_t seqno, UecBas
     return pkt;
 }
 
-UecNackPacket* UecSink::nack(uint16_t path_id, UecBasePacket::seq_t seqno,bool last_hop, bool ecn_echo) {
+UecNackPacket* UecSink::nack(uint32_t path_id, UecBasePacket::seq_t seqno,bool last_hop, bool ecn_echo) {
     UecNackPacket* pkt = UecNackPacket::newpkt(_flow, NULL, seqno, path_id,  _recvd_bytes,_rcv_cwnd_pen,_srcaddr);
+    pkt->set_src(_dstaddr);
     pkt->set_last_hop(last_hop);
     pkt->set_ecn_echo(ecn_echo);
     return pkt;

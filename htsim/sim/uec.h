@@ -594,7 +594,6 @@ class UecSink : public DataReceiver {
     static int TGT_EV_SIZE;
 
     static bool _receiver_oversubscribed_cc; 
-
     static void setHostTablePath(const std::string& path) { _base_host_table_path = path; }
     static void setHostTableP(uint32_t hosts_per_switch) { _p = hosts_per_switch; }
 

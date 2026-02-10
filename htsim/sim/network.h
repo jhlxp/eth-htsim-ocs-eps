@@ -72,7 +72,7 @@ class Packet {
     
     /* empty constructor; Packet::set must always be called as
        well. It's a separate method, for convenient reuse */
-    Packet() {_is_header = false; _bounced = false; _type = IP; _flags = 0; _refcount = 0; _src = UINT32_MAX; _dst = UINT32_MAX; _pathid = UINT32_MAX; _direction = NONE; _ingressqueue = NULL;} 
+    Packet() {_is_header = false; _bounced = false; _type = IP; _flags = 0; _refcount = 0; _src = UINT32_MAX; _dst = UINT32_MAX; _pathid = UINT32_MAX; _hop_count = 0; _direction = NONE; _ingressqueue = NULL;} 
 
     /* say "this packet is no longer wanted". (doesn't necessarily
        destroy it, so it can be reused) */
@@ -121,6 +121,9 @@ class Packet {
     }
 
     inline void set_pathid(uint32_t p) { _pathid = p;}
+    inline uint32_t hop_count() const { return _hop_count; }
+    inline void set_hop_count(uint32_t hop_count) { _hop_count = hop_count; }
+    inline void increment_hop_count() { _hop_count++; }
     const Route* route() const {return _route;}
     const Route* reverse_route() const {return _route->reverse();}
 
@@ -190,6 +193,7 @@ class Packet {
     uint32_t _src; //used for packets that do not have a route in switched networks.
     uint32_t _dst; //used for packets that do not have a route in switched networks.    
     uint32_t _pathid;  //used for ECMP hashing.
+    uint32_t _hop_count; //used for low-diameter topologies
     packet_direction _direction; //used to avoid loop in FatTrees.   
 
     // A packet can contain a route or a routegraph, but not both.

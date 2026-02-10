@@ -2122,6 +2122,7 @@ mem_b UecSrc::sendNewPacket(const Route& route) {
 
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
+    p->set_hop_count(0);
     p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
 
     if (_backlog == 0 || (_receiver_based_cc && _credit <= 0) || ( _sender_based_cc &&  (_in_flight + full_pkt_size) >= _cwnd )) 
@@ -2168,6 +2169,7 @@ mem_b UecSrc::sendRtxPacket(const Route& route) {
 
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
+    p->set_hop_count(0);
     p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
 
     createSendRecord(seq_no, full_pkt_size);
@@ -2201,6 +2203,7 @@ void UecSrc::sendProbe() {
     p->set_dst(_dstaddr);
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
+    p->set_hop_count(0);
     // p->sendOn();
     _nic.sendControlPacket(p, this, NULL);
 
@@ -2232,6 +2235,7 @@ void UecSrc::sendRTS() {
 
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
+    p->set_hop_count(0);
 
     // p->sendOn();
     _nic.sendControlPacket(p, this, NULL);
@@ -2539,50 +2543,6 @@ UecSink::UecSink(TrafficLogger* trafficLogger, UecPullPacer* pullPacer, UecNIC& 
     _receiver_cc = NULL;
 }
 
-UecSink::UecSink(TrafficLogger* trafficLogger,
-                   linkspeed_bps linkSpeed,
-                   double rate_modifier,
-                   uint16_t mtu,
-                   EventList& eventList,
-                   UecNIC& nic,
-                   uint32_t no_of_ports)
-        : DataReceiver("uecSink"),
-            _nic(nic),
-            _flow(trafficLogger),
-            _dstaddr(UINT32_MAX),
-      _expected_epsn(0),
-      _high_epsn(0),
-      _retx_backlog(0),
-      _latest_pull(INIT_PULL),
-      _highest_pull_target(INIT_PULL),
-      _received_bytes(0),
-      _accepted_bytes(0),
-      _recvd_bytes(0),
-      _rcv_cwnd_pen(255),
-      _end_trigger(NULL),
-      _epsn_rx_bitmap(0),
-      _out_of_order_count(0),
-      _ack_request(false),
-      _entropy(0) {
-    
-    if (UecSrc::_receiver_based_cc)
-        _pullPacer = new UecPullPacer(linkSpeed, rate_modifier, mtu, eventList, no_of_ports);
-    else    
-        _pullPacer = NULL;
-
-    _no_of_ports = no_of_ports;
-    _ports.resize(no_of_ports);
-    for (uint32_t p = 0; p < _no_of_ports; p++) {
-        _ports[p] = new UecSinkPort(*this, p);
-    }
-    _stats = {0, 0, 0, 0, 0,0,0};
-    _in_pull = false;
-    _in_slow_pull = false;
-
-    _pcie = NULL;
-    _receiver_cc = NULL;
-}
-
 void UecSink::setDst(uint32_t dst) {
     _dstaddr = dst;
     if (_base_host_table_path.empty() || _p == 0) {
@@ -2637,6 +2597,50 @@ void UecSink::setDst(uint32_t dst) {
                   << " -> " << dst_switch << std::endl;
         exit(-1);
     }
+}
+
+UecSink::UecSink(TrafficLogger* trafficLogger,
+                   linkspeed_bps linkSpeed,
+                   double rate_modifier,
+                   uint16_t mtu,
+                   EventList& eventList,
+                   UecNIC& nic,
+                   uint32_t no_of_ports)
+        : DataReceiver("uecSink"),
+            _nic(nic),
+            _flow(trafficLogger),
+            _dstaddr(UINT32_MAX),
+      _expected_epsn(0),
+      _high_epsn(0),
+      _retx_backlog(0),
+      _latest_pull(INIT_PULL),
+      _highest_pull_target(INIT_PULL),
+      _received_bytes(0),
+      _accepted_bytes(0),
+      _recvd_bytes(0),
+      _rcv_cwnd_pen(255),
+      _end_trigger(NULL),
+      _epsn_rx_bitmap(0),
+      _out_of_order_count(0),
+      _ack_request(false),
+      _entropy(0) {
+    
+    if (UecSrc::_receiver_based_cc)
+        _pullPacer = new UecPullPacer(linkSpeed, rate_modifier, mtu, eventList, no_of_ports);
+    else    
+        _pullPacer = NULL;
+
+    _no_of_ports = no_of_ports;
+    _ports.resize(no_of_ports);
+    for (uint32_t p = 0; p < _no_of_ports; p++) {
+        _ports[p] = new UecSinkPort(*this, p);
+    }
+    _stats = {0, 0, 0, 0, 0,0,0};
+    _in_pull = false;
+    _in_slow_pull = false;
+
+    _pcie = NULL;
+    _receiver_cc = NULL;
 }
 
 void UecSink::connectPort(uint32_t port_num, UecSrc& src, const Route& route) {
@@ -3045,6 +3049,7 @@ UecPullPacket* UecSink::pull(UecBasePacket::pull_quanta& extra_credit) {
     UecPullPacket* pkt = NULL;
     pkt = UecPullPacket::newpkt(_flow, NULL, _latest_pull, false, _srcaddr);
     pkt->set_pathid(nextEntropy());
+    pkt->set_hop_count(0);
     pkt->set_src(_dstaddr);
 
     return pkt;
@@ -3111,6 +3116,7 @@ UecAckPacket* UecSink::sack(uint32_t path_id, UecBasePacket::seq_t seqno, UecBas
     pkt->set_ooo(_out_of_order_count);
     pkt->set_rtx_echo(rtx_echo);
     pkt->set_probe_ack(false);
+    pkt->set_hop_count(0);
     return pkt;
 }
 
@@ -3119,6 +3125,7 @@ UecNackPacket* UecSink::nack(uint32_t path_id, UecBasePacket::seq_t seqno,bool l
     pkt->set_src(_dstaddr);
     pkt->set_last_hop(last_hop);
     pkt->set_ecn_echo(ecn_echo);
+    pkt->set_hop_count(0);
     return pkt;
 }
 

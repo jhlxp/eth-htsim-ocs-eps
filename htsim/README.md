@@ -1,6 +1,6 @@
 # Overview
 
-UEC htsim is based on the open source htsim Network simulator.
+UEC htsim is based on the open source htsim Network simulator, extended with support for custom network topologies including Fat Tree, Dragonfly, and SlimFly.
 
 ## htsim Network Simulator
 
@@ -85,17 +85,61 @@ The last line shows a summary of the run, starting with the total number of pack
 To get more details, the `-debug` flag increases the output and shows more details on the active congestion control mechanism.
 
 
-A second important, but optional parameter is the topology specification. 
-At this point, only fat tree topologies are actively developed and maintained.
+A second important, but optional parameter is the topology specification.
+The simulator supports three network topologies:
 
-If no topology-related parameters are provided, htsim uses default parameter values to create one.
-Custom parameters can be provided as command line parameters or through topology files. 
-The latter are the preferred method.
+### Fat Tree (default)
 
-Here is an example:
+Fat tree topologies are the default and most mature topology. If no topology parameters are provided, htsim creates a 3-tier fat tree with 12µs RTT. Custom fat tree topologies can be specified via topology files.
+
+Binary: `htsim_uec`
 
 ```bash
 ./htsim_uec -tm connection_matrices/perm_32n_32c_2MB.cm -topo topologies/leaf_spine_tiny.topo
+```
+
+### Dragonfly
+
+Dragonfly topologies use a two-level direct-connect structure organized in groups. Pre-generated topology assets are provided in `topologies/dragonfly/` (e.g., `p3a6h3` for p=3 hosts/switch, a=6 switches/group, h=3 global links/switch).
+
+Binary: `htsim_uec_df`
+
+Supported routing strategies: `MINIMAL`, `VALIANT`, `UGAL_L`, `SOURCE`
+
+```bash
+./htsim_uec_df -basepath topologies/dragonfly/p3a6h3 -tm traffic.tm -routing MINIMAL -q 88
+```
+
+For `SOURCE` routing, host-level routing tables are loaded automatically from the `host_table/` subdirectory within the topology path.
+
+### SlimFly
+
+SlimFly topologies use a two-partition structure based on optimized graph constructions. Pre-generated topology assets are provided in `topologies/slimfly/` (e.g., `p4q5` for p=4 hosts/switch, q=5 graph parameter).
+
+Binary: `htsim_uec_sf`
+
+Supported routing strategies: `MINIMAL`, `VALIANT`, `UGAL_L`, `SOURCE`
+
+```bash
+./htsim_uec_sf -topo topologies/slimfly/p4q5 -tm traffic.tm -routing MINIMAL -q 88
+```
+
+### Traffic Matrix Format
+
+All topologies use the same traffic matrix format:
+
+```
+Nodes <N>
+Connections <M>
+<src>-><dst> start <picoseconds> size <bytes>
+```
+
+For example, a single 1 MiB flow starting at time 0 in a 342-host network:
+
+```
+Nodes 342
+Connections 1
+0->341 start 0 size 1048576
 ```
 
 The `datacenter/topologies` folder contains a set of examples.
@@ -119,7 +163,7 @@ The repository layout is as follows:
 - `sim` the main congestion control simulation files
 - `sim/datacenter` simulation scenarios, topologies, binaries, and validation scripts
 - `sim/datacenter/connection_matrices` collection of connection matrices used by the validation scripts as well as Python scripts to generate them
-- `sim/datacenter/topologies` collection of connection matrices used by the validation scripts
+- `sim/datacenter/topologies` collection of topology files and assets for fat tree, dragonfly, and slimfly networks
 
 In addition to the UEC congestion management code, the repository contains a wide range of other network protocols.
 These are currently not maintained and there is no expectation for any of them to work correctly or at all.

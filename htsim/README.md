@@ -112,6 +112,20 @@ Supported routing strategies: `MINIMAL`, `VALIANT`, `UGAL_L`, `SOURCE`
 
 For `SOURCE` routing, host-level routing tables are loaded automatically from the `host_table/` subdirectory within the topology path.
 
+To generate custom Dragonfly topology assets (`dragonfly.topo`, `dragonfly.adjlist`, `host_table/`) for any `(p,a,h)`, use:
+
+```bash
+python sim/datacenter/topologies/dragonfly/generate_dragonfly_assets.py -p <p> -a <a> -H <h> --out sim/datacenter/topologies/dragonfly/p${p}a${a}h${h}
+```
+
+Example for 4 hosts (`p2a1h1`):
+
+```bash
+python sim/datacenter/topologies/dragonfly/generate_dragonfly_assets.py -p 2 -a 1 -H 1 --out sim/datacenter/topologies/dragonfly/p2a1h1
+```
+
+The Dragonfly generator script is adapted from the SPCL topology-generation tooling and outputs files directly in the layout expected by `htsim_uec_df`.
+
 ### SlimFly
 
 SlimFly topologies use a two-partition structure based on optimized graph constructions. Pre-generated topology assets are provided in `topologies/slimfly/` (e.g., `p4q5` for p=4 hosts/switch, q=5 graph parameter).
@@ -123,6 +137,22 @@ Supported routing strategies: `MINIMAL`, `VALIANT`, `UGAL_L`, `SOURCE`
 ```bash
 ./htsim_uec_sf -topo topologies/slimfly/p4q5 -tm traffic.tm -routing MINIMAL -q 88
 ```
+
+To generate custom SlimFly topology assets (`slimfly.topo`, `slimfly.adjlist`, `fib/`, `host_table/`) for any `(p,q)`, use:
+
+```bash
+python sim/datacenter/topologies/slimfly/generate_slimfly_assets.py -p <p> -q <q> --out sim/datacenter/topologies/slimfly/p${p}q${q}
+```
+
+Example:
+
+```bash
+python sim/datacenter/topologies/slimfly/generate_slimfly_assets.py -p 4 -q 5 --out sim/datacenter/topologies/slimfly/p4q5
+```
+
+The SlimFly generator script is adapted from the SPCL topology-generation tooling and emits all files required by `htsim_uec_sf` in this repository.
+
+Note: topology generation scripts require Python packages `networkx` and `sympy`.
 
 ### Traffic Matrix Format
 

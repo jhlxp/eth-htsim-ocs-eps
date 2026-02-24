@@ -154,6 +154,12 @@ The SlimFly generator script is adapted from the SPCL topology-generation toolin
 
 Note: topology generation scripts require Python packages `networkx` and `sympy`.
 
+Quick generator validation (small checks + end-to-end SOURCE runs for Dragonfly and SlimFly):
+
+```bash
+bash tests/run_generator_tests.sh
+```
+
 ### Traffic Matrix Format
 
 All topologies use the same traffic matrix format:

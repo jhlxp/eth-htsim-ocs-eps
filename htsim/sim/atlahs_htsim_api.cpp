@@ -31,10 +31,8 @@ void AtlahsHtsimApi::Send(const SendEvent &event, graph_node_properties elem) {
 
     
 
-    if (getNumberNic() > 1) {
-        from = getHtsimNodeNumber(from, elem.nic);
-        to = getHtsimNodeNumber(to, elem.nic);
-    }
+    from = getHtsimNodeNumber(from, elem.nic);
+    to = getHtsimNodeNumber(to, elem.nic);
 
     simtime_picosec flow_duration = size * 8 / 200 * 1000;
 

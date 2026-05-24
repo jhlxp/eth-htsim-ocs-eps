@@ -8,6 +8,8 @@
 #include "lgs/TimelineVisualization.hpp"
 #include "lgs/cmdline.h"
 #include <chrono>
+#include <cmath>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -222,6 +224,11 @@ void LogSimInterface::htsim_simulate_until(int64_t until) {
     //printf("Running HTSIM Simulate Until %lu - HtSime Time is %lu\n", until, htsim_api->getGlobalTimeNs());
 
     if (until != -1) {
+      // Clamp to at least current HTSIM time to avoid scheduling in the past
+      int64_t htsim_now_ns = static_cast<int64_t>(htsim_api->getGlobalTimeNs());
+      if (until < htsim_now_ns) {
+          until = htsim_now_ns;
+      }
       compute_started++;
       null_events_handler->setCompute(until);
     }
@@ -663,7 +670,8 @@ int start_lgs(std::string filename_goal, LogSimInterface &lgs) {
                   int updated_size = (num_packets+1) * 4160; // Parameterize this. This accounts for the header size
                   elem.size = updated_size;
 
-                  uint64_t bandwidth_cost2 = static_cast<uint64_t>((elem.size) * G);
+                  uint64_t bandwidth_cost2 = std::max(static_cast<uint64_t>(1),
+                                                       static_cast<uint64_t>(std::ceil((double)(elem.size) * G)));
                   nextgs[elem.host][elem.nic] = elem.time + g + bandwidth_cost2; 
                   can_simulate_until = nextgs[elem.host][elem.nic];
 

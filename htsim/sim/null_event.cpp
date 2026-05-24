@@ -25,7 +25,12 @@ void NullEvent::doNextEvent() {
 }
 
 void NullEvent::setCompute(simtime_picosec computation_time) {
-    eventlist().sourceIsPendingRel(*this, computation_time * 1000 - eventlist().now()); // ns to ps
+    simtime_picosec target_ps = computation_time * 1000; // ns to ps
+    simtime_picosec now_ps = eventlist().now();
+    // Guard against truncation from ns/ps round-trip: if target is at or
+    // before current time, schedule immediately instead of underflowing.
+    simtime_picosec rel = (target_ps > now_ps) ? (target_ps - now_ps) : 0;
+    eventlist().sourceIsPendingRel(*this, rel);
 }
 
 void NullEvent::startComputations() { eventlist().doNextEvent(); }

@@ -1,7 +1,15 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-                                                     
 #include <algorithm>
+#include <cstdlib>
 #include "trigger.h"
 using namespace std;
+
+namespace {
+bool traceTriggers() {
+    const char* value = std::getenv("HTSIM_TRACE_TRIGGERS");
+    return value && value[0] != '\0' && value[0] != '0';
+}
+}  // namespace
 
 Trigger::Trigger(EventList& eventlist, triggerid_t id) : _eventlist(eventlist), _id(id) {
 }
@@ -23,7 +31,9 @@ SingleShotTrigger::activate() {
     assert(!_done);
     assert(_targets.size() > 0);
     vector <TriggerTarget*>::iterator i;
-    cout << "Trigger " << _id << " fired, " << _targets.size() << " targets\n";
+    if (traceTriggers()) {
+        cout << "Trigger " << _id << " fired, " << _targets.size() << " targets\n";
+    }
     for (i = _targets.begin(); i != _targets.end(); i++) {
         _eventlist.triggerIsPending(**i);
     }
@@ -40,10 +50,14 @@ void
 MultiShotTrigger::activate() {
     if (_next>=_targets.size()){
         //I have activated everyone!
-        cout << "Noone left to activate" << endl;
+        if (traceTriggers()) {
+            cout << "Noone left to activate" << endl;
+        }
         return;
     }
-    cout << "Multishot Trigger " << _id << " fired, " << _targets.size() << " targets\n";
+    if (traceTriggers()) {
+        cout << "Multishot Trigger " << _id << " fired, " << _targets.size() << " targets\n";
+    }
     _eventlist.triggerIsPending(*(_targets[_next]));
     _next++;
 }
@@ -60,12 +74,16 @@ BarrierTrigger::activate() {
     assert(_targets.size() > 0);
     _activations_remaining--;
     if (_activations_remaining > 0) {
-        cout << "Trigger " << _id << " activated, activations remaining: "
-             << _activations_remaining << endl;
+        if (traceTriggers()) {
+            cout << "Trigger " << _id << " activated, activations remaining: "
+                 << _activations_remaining << endl;
+        }
         return;
     }
     vector <TriggerTarget*>::iterator i;
-    cout << "Trigger " << _id << " fired, " << _targets.size() << " targets\n";
+    if (traceTriggers()) {
+        cout << "Trigger " << _id << " fired, " << _targets.size() << " targets\n";
+    }
     for (i = _targets.begin(); i != _targets.end(); i++) {
         _eventlist.triggerIsPending(**i);
     }

@@ -1,16 +1,28 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-
 #include "uec.h"
 #include <math.h>
+#include <cstdlib>
 #include <cstdint>
 #include <fstream>
 #include <sstream>
 #include "circular_buffer.h"
+#include "data_collector.h"
 #include "uec_logger.h"
 #include "pciemodel.h"
 
 using namespace std;
 
 namespace {
+bool envFlagEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value && value[0] != '\0' && value[0] != '0';
+}
+
+bool traceFlowCompletions() {
+    static bool enabled = envFlagEnabled("HTSIM_TRACE_FLOW_COMPLETIONS");
+    return enabled;
+}
+
 void tokenize(const std::string& str, char delim, std::vector<std::string>& out) {
     std::stringstream ss(str);
     std::string s;
@@ -823,6 +835,35 @@ void UecSrc::handlePull(UecBasePacket::pull_quanta pullno) {
     }
 }
 
+void UecSrc::logFlowCompletionMetric() {
+    htsim::DataCollector& data_collector = htsim::DataCollector::get_instance();
+    htsim::CsvMetric* flow_metric = data_collector.RegisterCsvMetric(
+        "flowsInfo", {"srcNode_dstNode_flowId", "flowSizeBytes", "startTimeNs", "endTimeNs",
+                      "fctNs", "baseRttNs", "targetRttNs", "rtoNs", "bdpBytes",
+                      "maxCwndBytes", "oooCount", "oooAvgDistance", "oooMaxDistance",
+                      "totalPackets"});
+
+    simtime_picosec now = eventlist().now();
+    const uint64_t total_packets = _mss ? (_flow_size + _mss - 1) / _mss : 0;
+    flow_metric->LogData({
+        std::to_string(_srcaddr) + "_" + std::to_string(_dstaddr) + "_" +
+            std::to_string(flowId()),
+        std::to_string(_flow_size),
+        std::to_string(timeAsNs(_flow_start_time)),
+        std::to_string(timeAsNs(now)),
+        std::to_string(timeAsNs(now - _flow_start_time)),
+        std::to_string(timeAsNs(_base_rtt)),
+        std::to_string(timeAsNs(_target_Qdelay)),
+        std::to_string(timeAsNs(_min_rto)),
+        std::to_string(_bdp),
+        std::to_string(_maxwnd),
+        std::to_string(_sink ? _sink->oooCount() : 0),
+        std::to_string(_sink ? _sink->oooAvgDistance() : 0.0),
+        std::to_string(_sink ? _sink->oooMaxDistance() : 0),
+        std::to_string(total_packets),
+    });
+}
+
 bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
 
     if (_done_sending) {
@@ -834,21 +875,24 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
     } else { 
         if (_msg_tracker.has_value()) {
             if (_msg_tracker.value()->checkFinished()) {
-                cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
-                    << " finished at " << timeAsUs(eventlist().now()) 
-                    << " total messages " << _msg_tracker.value()->getMsgCompleted()
-                    << " total packets " << cum_ack 
-                    << " RTS " << _stats.rts_pkts_sent 
-                    << " total bytes " << ((mem_b)cum_ack - _stats.rts_pkts_sent) * _mss
-                    << " in_flight now " << _in_flight 
-                    << " fair_inc " << _nscc_overall_stats.inc_fair_bytes
-                    << " prop_inc " << _nscc_overall_stats.inc_prop_bytes
-                    << " fast_inc " << _nscc_overall_stats.inc_fast_bytes 
-                    << " eta_inc " << _nscc_overall_stats.inc_eta_bytes 
-                    << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
-                    << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
-                    << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
-                    << endl;
+                if (traceFlowCompletions()) {
+                    cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
+                        << " finished at " << timeAsUs(eventlist().now()) 
+                        << " total messages " << _msg_tracker.value()->getMsgCompleted()
+                        << " total packets " << cum_ack 
+                        << " RTS " << _stats.rts_pkts_sent 
+                        << " total bytes " << ((mem_b)cum_ack - _stats.rts_pkts_sent) * _mss
+                        << " in_flight now " << _in_flight 
+                        << " fair_inc " << _nscc_overall_stats.inc_fair_bytes
+                        << " prop_inc " << _nscc_overall_stats.inc_prop_bytes
+                        << " fast_inc " << _nscc_overall_stats.inc_fast_bytes 
+                        << " eta_inc " << _nscc_overall_stats.inc_eta_bytes 
+                        << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
+                        << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
+                        << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
+                        << endl;
+                }
+                logFlowCompletionMetric();
                 cancelRTO();
                 _done_sending = true;
 
@@ -865,21 +909,24 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
             }
         } else {
             if ((((int64_t)cum_ack - _stats.rts_pkts_sent) * _mss) >= (int64_t)_flow_size) {
-                cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
-                    << " finished at " << timeAsUs(eventlist().now()) 
-                    << " total messages " << 1 
-                    << " total packets " << cum_ack 
-                    << " RTS " << _stats.rts_pkts_sent 
-                    << " total bytes " << ((mem_b)cum_ack - _stats.rts_pkts_sent) * _mss
-                    << " in_flight now " << _in_flight 
-                    << " fair_inc " << _nscc_overall_stats.inc_fair_bytes
-                    << " prop_inc " << _nscc_overall_stats.inc_prop_bytes
-                    << " fast_inc " << _nscc_overall_stats.inc_fast_bytes 
-                    << " eta_inc " << _nscc_overall_stats.inc_eta_bytes 
-                    << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
-                    << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
-                    << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
-                    << endl;
+                if (traceFlowCompletions()) {
+                    cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename 
+                        << " finished at " << timeAsUs(eventlist().now()) 
+                        << " total messages " << 1 
+                        << " total packets " << cum_ack 
+                        << " RTS " << _stats.rts_pkts_sent 
+                        << " total bytes " << ((mem_b)cum_ack - _stats.rts_pkts_sent) * _mss
+                        << " in_flight now " << _in_flight 
+                        << " fair_inc " << _nscc_overall_stats.inc_fair_bytes
+                        << " prop_inc " << _nscc_overall_stats.inc_prop_bytes
+                        << " fast_inc " << _nscc_overall_stats.inc_fast_bytes 
+                        << " eta_inc " << _nscc_overall_stats.inc_eta_bytes 
+                        << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
+                        << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
+                        << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
+                        << endl;
+                }
+                logFlowCompletionMetric();
                 _speculating = false;
                 if (_end_trigger) {
                     _end_trigger->activate();
@@ -2128,7 +2175,7 @@ mem_b UecSrc::sendNewPacket(const Route& route) {
     if (_backlog == 0 || (_receiver_based_cc && _credit <= 0) || ( _sender_based_cc &&  (_in_flight + full_pkt_size) >= _cwnd )) 
         p->set_ar(true);
     
-    createSendRecord(_highest_sent, full_pkt_size);
+    createSendRecord(ev, _highest_sent, full_pkt_size);
     if (_debug_src)
         cout << timeAsUs(eventlist().now()) << " " << _flow.str() << " sending pkt " << _highest_sent
              << " size " << full_pkt_size << " pull target " << _pull_target << " ack request " << p->ar()
@@ -2172,7 +2219,7 @@ mem_b UecSrc::sendRtxPacket(const Route& route) {
     p->set_hop_count(0);
     p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
 
-    createSendRecord(seq_no, full_pkt_size);
+    createSendRecord(ev, seq_no, full_pkt_size);
 
     if (_debug_src)
         cout << timeAsUs(eventlist().now()) << " " << _flow.str() << " " << _nodename << " sending rtx pkt " << seq_no
@@ -2228,7 +2275,6 @@ void UecSrc::sendRTS() {
         cout << timeAsUs(eventlist().now()) << " " << _flow.str() << " " << _nodename << " sendRTS, flow " << _flow.str()
              << " epsn " << _highest_sent << " last RTS " << timeAsUs(_last_rts)
              << " in_flight " << _in_flight << " pull_target " << _pull_target << " pull " << _pull << endl;
-    createSendRecord(_highest_sent, _hdr_size);
     auto* p =
         UecRtsPacket::newpkt(_flow, NULL, _highest_sent, _pull_target, _dstaddr);
     p->set_src(_srcaddr);
@@ -2236,6 +2282,7 @@ void UecSrc::sendRTS() {
     uint32_t ev = _mp->nextEntropy(_highest_sent, (uint64_t)_cwnd/_mss);
     p->set_pathid(ev);
     p->set_hop_count(0);
+    createSendRecord(ev, _highest_sent, _hdr_size);
 
     // p->sendOn();
     _nic.sendControlPacket(p, this, NULL);
@@ -2246,14 +2293,14 @@ void UecSrc::sendRTS() {
     startRTO(eventlist().now());
 }
 
-void UecSrc::createSendRecord(UecBasePacket::seq_t seqno, mem_b full_pkt_size) {
+void UecSrc::createSendRecord(uint32_t path_id, UecBasePacket::seq_t seqno, mem_b full_pkt_size) {
     if (_debug_src)
         cout << _flow.str() << " " << _nodename << " createSendRecord seqno: " << seqno << " size " << full_pkt_size
              << endl;
 
     assert(_tx_bitmap.find(seqno) == _tx_bitmap.end());
 
-    _tx_bitmap.emplace(seqno, sendRecord(full_pkt_size, eventlist().now()));
+    _tx_bitmap.emplace(seqno, sendRecord(path_id, full_pkt_size, eventlist().now()));
     _send_times.emplace(eventlist().now(), seqno);
 
     if (_rtx_times.find(seqno) == _rtx_times.end()) {
@@ -2372,9 +2419,7 @@ void UecSrc::rtxTimerExpired() {
     assert(send_record != _tx_bitmap.end());
     mem_b pkt_size = send_record->second.pkt_size;
 
-    // Trigger multipathing feedback for timeout. Unless we save EVs on the sender per packet, we will 
-    // not be able to recover the original timed-out ev.
-    _mp->processEv(UecMultipath::UNKNOWN_EV, UecMultipath::PATH_TIMEOUT);
+    _mp->processEv(send_record->second.path_id, UecMultipath::PATH_TIMEOUT);
 
     // update flightsize?
 
@@ -2476,7 +2521,9 @@ void UecSrc::rtxTimerExpired() {
 }
 
 void UecSrc::activate() {
-    cout << _flow.str() << " activate" << endl;
+    if (traceFlowCompletions()) {
+        cout << _flow.str() << " activate" << endl;
+    }
     startConnection();
 }
 
@@ -2525,6 +2572,8 @@ UecSink::UecSink(TrafficLogger* trafficLogger, UecPullPacer* pullPacer, UecNIC& 
       _end_trigger(NULL),
       _epsn_rx_bitmap(0),
       _out_of_order_count(0),
+      _ooo_distance_sum(0),
+      _ooo_distance_max(0),
       _ack_request(false),
       _entropy(0)  {
     
@@ -2622,6 +2671,8 @@ UecSink::UecSink(TrafficLogger* trafficLogger,
       _end_trigger(NULL),
       _epsn_rx_bitmap(0),
       _out_of_order_count(0),
+      _ooo_distance_sum(0),
+      _ooo_distance_max(0),
       _ack_request(false),
       _entropy(0) {
     
@@ -2808,6 +2859,11 @@ void UecSink::processData(UecDataPacket& pkt) {
         _epsn_rx_bitmap[pkt.epsn()] = 1;
         _out_of_order_count++;
         _stats.out_of_order++;
+        const UecBasePacket::seq_t distance = pkt.epsn() - _expected_epsn;
+        _ooo_distance_sum += distance;
+        if (distance > _ooo_distance_max) {
+            _ooo_distance_max = distance;
+        }
     }
     if (_src->flow()->flow_id() == UecSrc::_debug_flowid) {
         cout << timeAsUs(_src->eventlist().now()) << " flowid " << _src->flow()->flow_id()
@@ -2960,6 +3016,11 @@ void UecSink::processRts(const UecRtsPacket& pkt) {
         _epsn_rx_bitmap[pkt.epsn()] = 1;
         _out_of_order_count++;
         _stats.out_of_order++;
+        const UecBasePacket::seq_t distance = pkt.epsn() - _expected_epsn;
+        _ooo_distance_sum += distance;
+        if (distance > _ooo_distance_max) {
+            _ooo_distance_max = distance;
+        }
     }
 
     UecAckPacket* ack_packet =
@@ -3281,5 +3342,3 @@ void UecPullPacer::requestPull(UecSink* sink) {
         _active = true;
     }
 }
-
-

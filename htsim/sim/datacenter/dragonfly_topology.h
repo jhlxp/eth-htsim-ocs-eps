@@ -79,6 +79,9 @@ public:
         _ecn_high = ecn_high;
     }
 
+    static double _fail_percentage;
+    static int _fail_packet_rate;
+
 private:
     uint32_t _p, _a, _h;
     mem_b _queue_size;
@@ -97,7 +100,8 @@ private:
     Queue* alloc_host_queue(QueueLogger* queue_logger, linkspeed_bps linkspeed);
     Queue* alloc_switch_queue(QueueLogger* queue_logger,
                               linkspeed_bps linkspeed,
-                              mem_b queue_size);
+                              mem_b queue_size,
+                              bool is_failing);
 
     std::vector<std::unordered_map<uint32_t, simtime_picosec>> _link_latencies;
 

@@ -1,5 +1,6 @@
 // -*- c-basic-offset: 4; indent-tabs-mode: nil -*-        
 #include "compositequeue.h"
+#include <cstdlib>
 #include <math.h>
 #include <iostream>
 #include <sstream>
@@ -27,6 +28,9 @@ CompositeQueue::CompositeQueue(linkspeed_bps bitrate, mem_b maxsize, EventList& 
     _num_bounced = 0;
     _ecn_minthresh = maxsize*2; // don't set ECN by default
     _ecn_maxthresh = maxsize*2; // don't set ECN by default
+    _is_failing = false;
+    _fail_rate = 0;
+    _packet_count = 0;
 
     _return_to_sender = false;
 
@@ -149,6 +153,23 @@ void CompositeQueue::doNextEvent() {
 
 void CompositeQueue::receivePacket(Packet& pkt)
 {
+    _packet_count++;
+    if (_is_failing && pkt.type() == UECDATA && _packet_count > _fail_rate) {
+        _packet_count = 0;
+        pkt.free();
+        return;
+    }
+
+    static const char* trace_flow_env = std::getenv("HTSIM_TRACE_FLOW");
+    static int trace_flow_id = trace_flow_env ? atoi(trace_flow_env) : -1;
+
+    if (trace_flow_id >= 0 && pkt.size() > 64 &&
+        static_cast<int>(pkt.flow_id()) == trace_flow_id) {
+        cout << "I am at Queue " << _nodename << " receiving packet seqno " << pkt.id()
+             << " size " << pkt.size() << " flowid " << pkt.flow_id() << " at time "
+             << timeAsUs(eventlist().now()) << endl;
+    }
+
     if (_queue_id == DEBUG_QUEUE_ID)
     {
         cout << timeAsUs(eventlist().now()) << " name " << _nodename << " arrive "

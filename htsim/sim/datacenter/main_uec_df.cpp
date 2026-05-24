@@ -10,6 +10,7 @@
 #include "clock.h"
 #include "compositequeue.h"
 #include "connection_matrix.h"
+#include "data_collector.h"
 #include "eventlist.h"
 #include "logfile.h"
 #include "main.h"
@@ -39,6 +40,9 @@ int main(int argc, char** argv) {
     // Commandline Arguments
     DragonflySwitch::RoutingStrategy routing_strategy = DragonflySwitch::MINIMAL;
     LoadBalancing_Algo load_balancing_algo = MIXED;
+    UecMpSource::Strategy source_lb_strategy = UecMpSource::Strategy::RANDOM;
+    UecMpSource::SpritzConfig spritz_config;
+    std::string source_lb_name = "RANDOM";
     std::string topo_base_path, tm_file;
     std::string host_table_base_path;
     mem_b cwnd_b = 0;
@@ -103,6 +107,46 @@ int main(int argc, char** argv) {
             else
                 throw std::logic_error("CC not recognized");
             i++;
+        } else if (!strcmp(argv[i], "-CC")) {
+            UecSrc::_sender_based_cc = true;
+            sender_driven_cc = true;
+            if (!strcmp(argv[i + 1], "NONE")) {
+                UecSrc::_sender_cc_algo = UecSrc::CONSTANT;
+            } else if (!strcmp(argv[i + 1], "DCTCP")) {
+                UecSrc::_sender_cc_algo = UecSrc::DCTCP;
+            } else if (!strcmp(argv[i + 1], "NSCC") || !strcmp(argv[i + 1], "SMARTT") ||
+                       !strcmp(argv[i + 1], "SMARTT_ECN") ||
+                       !strcmp(argv[i + 1], "SMARTT_ECN_SIMPLE")) {
+                UecSrc::_sender_cc_algo = UecSrc::NSCC;
+            } else if (!strcmp(argv[i + 1], "EQDS") || !strcmp(argv[i + 1], "EQDS_OS")) {
+                UecSrc::_sender_based_cc = false;
+                UecSrc::_receiver_based_cc = true;
+                UecSink::_oversubscribed_cc = !strcmp(argv[i + 1], "EQDS_OS");
+                sender_driven_cc = false;
+                receiver_driven_cc = true;
+                UecSrc::_sender_cc_algo = UecSrc::CONSTANT;
+            } else {
+                throw std::logic_error("CC not recognized");
+            }
+            i++;
+        } else if (!strcmp(argv[i], "-LB")) {
+            if (!strcmp(argv[i + 1], "ECMP")) {
+                source_lb_strategy = UecMpSource::Strategy::ECMP;
+            } else if (!strcmp(argv[i + 1], "OPS")) {
+                source_lb_strategy = UecMpSource::Strategy::OPS;
+            } else if (!strcmp(argv[i + 1], "FLICR")) {
+                source_lb_strategy = UecMpSource::Strategy::FLICR;
+            } else if (!strcmp(argv[i + 1], "FLOW_V1") || !strcmp(argv[i + 1], "SCOUT") ||
+                       !strcmp(argv[i + 1], "SPRITZ_SCOUT")) {
+                source_lb_strategy = UecMpSource::Strategy::FLOW_V1;
+            } else if (!strcmp(argv[i + 1], "FLOW_V2") || !strcmp(argv[i + 1], "SPRAY") ||
+                       !strcmp(argv[i + 1], "SPRITZ_SPRAY")) {
+                source_lb_strategy = UecMpSource::Strategy::FLOW_V2;
+            } else {
+                throw std::logic_error("LB not recognized");
+            }
+            source_lb_name = argv[i + 1];
+            i++;
         } else if (!strcmp(argv[i], "-load_balancing_algo")) {
             if (!strcmp(argv[i + 1], "bitmap"))
                 load_balancing_algo = BITMAP;
@@ -130,6 +174,37 @@ int main(int argc, char** argv) {
             i++;
         } else if (!strcmp(argv[i], "-q")) {
             queuesize = (mem_b)std::stoi(argv[i + 1]);
+            i++;
+        } else if (!strcmp(argv[i], "-p")) {
+            // Accepted for compatibility with the Spritz artifact scripts. The topology file
+            // remains the source of truth for hosts-per-switch in this port.
+            i++;
+        } else if (!strcmp(argv[i], "-fail-percentage")) {
+            DragonflyTopology::_fail_percentage = std::stod(argv[i + 1]);
+            i++;
+        } else if (!strcmp(argv[i], "-fail-rate")) {
+            DragonflyTopology::_fail_packet_rate = std::stoi(argv[i + 1]);
+            i++;
+        } else if (!strcmp(argv[i], "-flow-explore-threshold")) {
+            spritz_config.explore_threshold = std::stoi(argv[i + 1]);
+            i++;
+        } else if (!strcmp(argv[i], "-flow-ecn-threshold")) {
+            spritz_config.ecn_threshold = std::stoi(argv[i + 1]);
+            i++;
+        } else if (!strcmp(argv[i], "-flow-weight-scaling")) {
+            spritz_config.weight_scaling = std::stoi(argv[i + 1]);
+            i++;
+        } else if (!strcmp(argv[i], "-flow-sort-insert")) {
+            spritz_config.sort_buffer_insert = std::stoi(argv[i + 1]) != 0;
+            i++;
+        } else if (!strcmp(argv[i], "-flow-small-flows-bias")) {
+            spritz_config.small_flows_bias = std::stoi(argv[i + 1]) != 0;
+            i++;
+        } else if (!strcmp(argv[i], "-flow-small-flows-threshold")) {
+            spritz_config.small_flows_threshold = std::stoll(argv[i + 1]);
+            i++;
+        } else if (!strcmp(argv[i], "-flow-small-flows-weight")) {
+            spritz_config.small_flows_weight = std::stod(argv[i + 1]);
             i++;
         } else {
             throw std::logic_error("Argument not recognized");
@@ -216,6 +291,11 @@ int main(int argc, char** argv) {
         UecSink::setHostTableP(topo->get_p());
     }
 
+    htsim::DataCollector& data_collector = htsim::DataCollector::get_instance();
+    htsim::CsvMetric* global_metric = data_collector.RegisterCsvMetric(
+        "globalInfo", {"linkSpeedGbps", "linkDelayNs", "packetSizeBytes", "sackThresholdBytes",
+                       "queueSizeBytes", "kMinBytes", "kMaxBytes", "routing", "sourceLB"});
+
     uint32_t no_hosts = topo->get_no_hosts();
     ConnectionMatrix* conns = new ConnectionMatrix(no_hosts);
 
@@ -230,6 +310,14 @@ int main(int argc, char** argv) {
     simtime_picosec max_rtt = topo->get_max_rtt(routing_strategy, Packet::data_packet_size(),
                                                 UecBasePacket::get_ack_size());
     linkspeed_bps linkspeed = topo->get_linkspeed();
+    std::string link_latencies = topo->get_link_latencies();
+
+    global_metric->LogData({std::to_string(speedAsGbps(linkspeed)), link_latencies,
+                            std::to_string(Packet::data_packet_size()),
+                            std::to_string(UecSink::_bytes_unacked_threshold),
+                            std::to_string(queuesize), std::to_string(ecn_low),
+                            std::to_string(ecn_high), std::to_string(routing_strategy),
+                            source_lb_name});
 
     if (sender_driven_cc)
         UecSrc::initNsccParams(max_rtt, linkspeed, timeFromUs((uint32_t)0), -1, !trim_disable);
@@ -262,7 +350,9 @@ int main(int argc, char** argv) {
 
         std::unique_ptr<UecMultipath> mp = nullptr;
         if (routing_strategy == DragonflySwitch::SOURCE) {
-            mp = std::make_unique<UecMpSource>(host_table_base_path, src, dest, topo->get_p(), UecSrc::_debug);
+            mp = std::make_unique<UecMpSource>(host_table_base_path, src, dest, topo->get_p(),
+                                               source_lb_strategy, spritz_config, max_rtt,
+                                               crt->size, UecSrc::_debug);
         } else if (load_balancing_algo == BITMAP) {
             mp = std::make_unique<UecMpBitmap>(path_entropy_size, UecSrc::_debug);
         } else if (load_balancing_algo == REPS) {
@@ -389,4 +479,12 @@ int main(int argc, char** argv) {
     cout << "New: " << new_pkts << " Rtx: " << rtx_pkts << " RTS: " << rts_pkts
          << " Bounced: " << bounce_pkts << " ACKs: " << ack_pkts << " NACKs: " << nack_pkts
          << " Pulls: " << pull_pkts << " sleek_pkts: " << sleek_pkts << endl;
+
+    htsim::CsvMetric* packet_metric = data_collector.RegisterCsvMetric(
+        "packetInfo", {"newPkts", "rtxPkts", "rtsPkts", "bouncePkts", "ackPkts", "nackPkts",
+                       "pullPkts", "sleekPkts"});
+    packet_metric->LogData({std::to_string(new_pkts), std::to_string(rtx_pkts),
+                            std::to_string(rts_pkts), std::to_string(bounce_pkts),
+                            std::to_string(ack_pkts), std::to_string(nack_pkts),
+                            std::to_string(pull_pkts), std::to_string(sleek_pkts)});
 }

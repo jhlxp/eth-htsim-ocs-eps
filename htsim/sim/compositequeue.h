@@ -55,6 +55,11 @@ class CompositeQueue : public Queue {
             cout << "queue_id " << _queue_id << " ecn_low " << _ecn_minthresh << " ecn_high " << _ecn_maxthresh << endl;
     }
 
+    void set_fail_rate(int fail_rate) {
+        _is_failing = true;
+        _fail_rate = fail_rate;
+    }
+
     int _num_packets;
     int _num_headers; // only includes data packets stripped to headers, not acks or nacks
     int _num_acks;
@@ -87,6 +92,10 @@ class CompositeQueue : public Queue {
     int _queue_id;
     CircularBuffer<Packet*> _enqueued_low;
     CircularBuffer<Packet*> _enqueued_high;
+
+    bool _is_failing;
+    int _fail_rate;
+    int _packet_count;
 };
 
 #endif

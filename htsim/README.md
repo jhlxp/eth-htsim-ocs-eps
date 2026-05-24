@@ -69,18 +69,15 @@ You can run a single network connection using UEC CMS as follows:
 The output consists of two major parts: the configuration and setup section, and the runtime section.
 The first part of the output shows the configured/derived/default parameter settings and values used by htsim.
 It is important to verify that all the parameters are indeed accepted as expected when using custom configurations.
-The section part of the output starts with the `Starting simulation` line and displays per flow information.
+The runtime section starts with the `Starting simulation` line and ends with a packet summary. Per-flow completion records are written to `output_metrics/flowsInfo.csv`.
 
 ```
 Starting simulation
-Flow Uec_0_13 flowId 1000000001 uecSrc 0 starting at 0
-Flow Uec_0_13 flowId 1000000001 uecSrc 0 finished at 176.2 total messages 1 total packets 490 RTS 0 total bytes 2002140 in_flight now 0 fair_inc 0 prop_inc 15978 fast_inc 519430 eta_inc 9321 multi_dec -0 quick_dec -0 nack_dec -0
 .Done
 New: 490 Rtx: 0 RTS: 0 Bounced: 0 ACKs: 124 NACKs: 0 Pulls: 0 sleek_pkts: 0
 ```
 
-In this specific example, it displays the single flow's start and end information, including the flow completion time and details on the specific congestion control mechanism used.
-The last line shows a summary of the run, starting with the total number of packets sent, retransmissions, control messages, ACKs, etc.
+The last line shows a summary of the run, starting with the total number of packets sent, retransmissions, control messages, ACKs, etc. To restore verbose flow and trigger traces in stdout, set `HTSIM_TRACE_FLOW_COMPLETIONS=1` and/or `HTSIM_TRACE_TRIGGERS=1`.
 
 To get more details, the `-debug` flag increases the output and shows more details on the active congestion control mechanism.
 
@@ -111,6 +108,41 @@ Supported routing strategies: `MINIMAL`, `VALIANT`, `UGAL_L`, `SOURCE`
 ```
 
 For `SOURCE` routing, host-level routing tables are loaded automatically from the `host_table/` subdirectory within the topology path.
+
+#### Spritz Source Routing
+
+The Dragonfly and SlimFly binaries accept the Spritz artifact-style source load balancer flags when `-routing SOURCE` is selected:
+
+- `-LB ECMP`: deterministic source-path hashing.
+- `-LB OPS`: oblivious path selection; use `-flow-weight-scaling 0` for uniform OPS and a positive value such as `3` for latency-weighted OPS.
+- `-LB FLICR`: Flicr-style adaptive source-path selection.
+- `-LB FLOW_V1`: Spritz-Scout.
+- `-LB FLOW_V2`: Spritz-Spray.
+
+The Spritz knobs from the artifact scripts are also supported: `-flow-explore-threshold`, `-flow-ecn-threshold`, `-flow-weight-scaling`, `-flow-sort-insert`, `-flow-small-flows-bias`, `-flow-small-flows-threshold`, and `-flow-small-flows-weight`. The `-CC` aliases used by the Spritz artifact are accepted; `SMARTT_ECN` maps onto this tree's NSCC/SMaRTT-compatible congestion-control path.
+
+Example Spritz-Spray run on the Dragonfly workload used by the paper scripts:
+
+```bash
+cd htsim/sim/datacenter
+./htsim_uec_df \
+  -basepath ./topologies/dragonfly/p4a8h4 \
+  -tm ./experiments/df/p4a8h4/permutation_global_4MiB.cm \
+  -p 4 \
+  -routing SOURCE \
+  -CC SMARTT_ECN \
+  -LB FLOW_V2 \
+  -flow-explore-threshold 44 \
+  -flow-ecn-threshold 8 \
+  -flow-weight-scaling 3 \
+  -flow-sort-insert 1 \
+  -flow-small-flows-bias 1 \
+  -flow-small-flows-threshold 524288 \
+  -flow-small-flows-weight 100.0
+```
+
+Each run exports CSV metrics in `output_metrics/`, including `flowsInfo.csv`, `packetInfo.csv`, and `globalInfo.csv`.
+By default, UEC flow completion and trigger traces are not printed to stdout; set `HTSIM_TRACE_FLOW_COMPLETIONS=1` or `HTSIM_TRACE_TRIGGERS=1` when debugging old log-parsing workflows.
 
 To generate custom Dragonfly topology assets (`dragonfly.topo`, `dragonfly.adjlist`, `host_table/`) for any `(p,a,h)`, use:
 
@@ -180,6 +212,59 @@ Connections 1
 
 The `datacenter/topologies` folder contains a set of examples.
 
+## Reproducing Spritz Results
+
+The Spritz artifact workloads and topology assets are ported from the `ad` branch of `https://github.com/aleskubicek/sc25-spritz`. They are available under `sim/datacenter/experiments/` and `sim/datacenter/topologies/`. To run a compact Dragonfly comparison over the paper's `permutation_global_4MiB.cm` workload:
+
+```bash
+cd htsim/sim
+cmake -S . -B build
+cmake --build build --parallel
+cd datacenter
+python3 reproduce_spritz_subset.py
+```
+
+The summary is written to:
+
+```text
+experiments_output/spritz_subset/p4a8h4/permutation_global_4MiB/summary.csv
+```
+
+The script covers `MINIMAL`, `VALIANT`, `UGAL_L`, `SOURCE+ECMP`, uniform/weighted `OPS`, `FLICR`, `SPRITZ_SCOUT`, and uniform/weighted `SPRITZ_SPRAY`. To run only selected algorithms, pass `--only`, for example:
+
+```bash
+python3 reproduce_spritz_subset.py --only ECMP FLICR SPRITZ_SCOUT SPRITZ_SPRAY_W
+```
+
+The original artifact-style batch scripts are also included in `sim/datacenter/`:
+
+```bash
+python3 simulate_df_no_fail.py
+python3 simulate_sf_no_fail.py
+python3 simulate_df_fail_2p.py
+python3 simulate_sf_fail_2p.py
+```
+
+Those scripts run the broader Dragonfly/Slim Fly experiment matrix and save per-experiment summaries under `experiments_output/`.
+
+For the full `ad` artifact flow, use the root-level reproduction wrapper:
+
+```bash
+bash reproduce.sh quick
+bash reproduce.sh full
+bash reproduce.sh plot fig6 quick
+```
+
+`quick` runs a reduced simulation set and generates paper-style plots under `paper_plots/quick/`; `full` runs the broader artifact matrix. `validate_results.py` checks the full output layout and quantitative claims.
+
+To regenerate the Figure 1-style panels, run the Dragonfly 4 MiB adversarial case and then the parameterized plotting script:
+
+```bash
+cd sim/datacenter
+python3 simulate_df_no_fail.py --output-root experiments_output_quick --only-experiment adv_i5_4MiB --parallel 4
+OUTPUT_ROOT=experiments_output_quick OUT_DIR=../../../paper_plots/quick/fig1 bash run_fig_1.sh
+```
+
 
 ## Default Parameters
 
@@ -220,4 +305,3 @@ cmake --build build --parallel # To build the project
 cd build
 ctest
 ```
-

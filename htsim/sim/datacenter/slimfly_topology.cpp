@@ -283,7 +283,7 @@ void SlimFlyTopology::init_network() {
     std::mt19937 gen(std::random_device{}());
     std::uniform_int_distribution<size_t> dist(0, total_queues - 1);
 
-    while (failed_queues.size() < no_failures)
+    while (failed_queues.size() < static_cast<size_t>(no_failures))
         failed_queues.insert(dist(gen));
 
     int queue_index = 0;
@@ -293,7 +293,9 @@ void SlimFlyTopology::init_network() {
                 continue;
             bool fail_queue = failed_queues.find(queue_index) != failed_queues.end();    
             if (fail_queue) {
-                // fail rate support is not available in this port
+                CompositeQueue* cq = dynamic_cast<CompositeQueue*>(queues_switch_switch[i][j]);
+                if (cq)
+                    cq->set_fail_rate(_fail_packet_rate);
             }
             queue_index++;
         }

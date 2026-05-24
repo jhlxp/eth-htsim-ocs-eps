@@ -3,8 +3,11 @@
 #define UEC_MP_H
 
 #include <list>
+#include <deque>
+#include <map>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 #include "eventlist.h"
@@ -110,17 +113,64 @@ private:
 
 class UecMpSource : public UecMultipath {
 public:
+    enum class Strategy { RANDOM, ECMP, OPS, FLICR, FLOW_V1, FLOW_V2 };
+
+    struct SpritzConfig {
+        int explore_threshold = 10;
+        int ecn_threshold = 8;
+        int weight_scaling = 1;
+        bool sort_buffer_insert = false;
+        bool small_flows_bias = false;
+        mem_b small_flows_threshold = 524288;
+        double small_flows_weight = 10.0;
+    };
+
     UecMpSource(const string& base_host_table_path,
                 uint32_t src,
                 uint32_t dst,
                 uint32_t hosts_per_switch,
                 bool debug);
+    UecMpSource(const string& base_host_table_path,
+                uint32_t src,
+                uint32_t dst,
+                uint32_t hosts_per_switch,
+                Strategy strategy,
+                const SpritzConfig& config,
+                simtime_picosec base_rtt,
+                mem_b flow_size,
+                bool debug);
     void processEv(uint32_t path_id, PathFeedback feedback) override;
     uint32_t nextEntropy(uint64_t seq_sent, uint64_t cur_cwnd_in_pkts) override;
 private:
+    using FlowPair = std::pair<uint32_t, uint32_t>;
+
+    void load_paths(const string& base_host_table_path,
+                    uint32_t src,
+                    uint32_t dst,
+                    uint32_t hosts_per_switch);
+    void update_weighted_dist();
+    uint32_t stable_hash(uint32_t a, uint32_t b) const;
+
+    Strategy _strategy;
+    SpritzConfig _config;
+    FlowPair _flow_pair;
     vector<uint32_t> _paths;
+    std::map<uint32_t, size_t> _path_index_map;
+    std::vector<double> _weights;
     std::mt19937 _rng;
     std::uniform_int_distribution<size_t> _dist;
+    std::discrete_distribution<size_t> _dist_weighted;
+    simtime_picosec _base_rtt;
+    mem_b _flow_size;
+    int _packet_count;
+    int _ecn_count;
+    bool _first_rtt;
+    simtime_picosec _last_timestamp;
+    std::map<FlowPair, int> _ecn_counts;
+
+    static std::map<FlowPair, simtime_picosec> _last_ack_timestamp;
+    static std::map<FlowPair, std::deque<uint32_t>> _good_paths;
+    static std::map<FlowPair, std::set<uint32_t>> _bad_paths;
 };
 
 #endif  // UEC_MP_H

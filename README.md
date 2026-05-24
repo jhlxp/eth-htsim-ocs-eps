@@ -98,6 +98,38 @@ Connections <M>
 
 For more details, see [htsim/README.md](htsim/README.md).
 
+## Spritz Integration
+
+This branch integrates the Spritz source-routing load balancers from the `ad` branch of `https://github.com/aleskubicek/sc25-spritz` into the Dragonfly and SlimFly UEC binaries. With `-routing SOURCE`, use `-LB ECMP`, `OPS`, `FLICR`, `FLOW_V1` for Spritz-Scout, or `FLOW_V2` for Spritz-Spray. The Spritz artifact workloads, topology assets, batch scripts, and reproduction drivers are under [htsim/sim/datacenter](htsim/sim/datacenter).
+
+To reproduce the compact Dragonfly comparison:
+
+```bash
+cd htsim/sim
+cmake -S . -B build
+cmake --build build --parallel
+cd datacenter
+python3 reproduce_spritz_subset.py
+```
+
+The resulting CSV is written to `experiments_output/spritz_subset/p4a8h4/permutation_global_4MiB/summary.csv`. See [htsim/README.md](htsim/README.md) for the full Spritz flag list and artifact script commands.
+
+The full `ad` artifact pipeline is available via:
+
+```bash
+bash reproduce.sh quick
+bash reproduce.sh full
+```
+
+Paper-style plots are written under `paper_plots/`. For example:
+
+```bash
+bash reproduce.sh plot fig6 quick
+cd htsim/sim/datacenter
+python3 simulate_df_no_fail.py --output-root experiments_output_quick --only-experiment adv_i5_4MiB --parallel 4
+OUTPUT_ROOT=experiments_output_quick OUT_DIR=../../../paper_plots/quick/fig1 bash run_fig_1.sh
+```
+
 
 # References
 If you use ATLAHS for your research, please cite our paper using:

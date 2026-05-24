@@ -30,6 +30,10 @@ simtime_picosec DragonflyTopology::_link_latency_host = 200 * 1000;
 // Default: all switches 0 ns
 simtime_picosec DragonflyTopology::_switch_latency = 0 * 1000;
 
+// Default: no link failures
+double DragonflyTopology::_fail_percentage = 0.0;
+int DragonflyTopology::_fail_packet_rate = 0;
+
 std::string ntoa(double n);
 std::string itoa(uint64_t n);
 
@@ -198,7 +202,7 @@ void DragonflyTopology::init_network() {
             queue_logger = _logger_factory == NULL ? NULL : _logger_factory->createQueueLogger();
 
             queues_switch_host[i][j] =
-                alloc_switch_queue(queue_logger, _link_speed_host, _queue_size);
+                alloc_switch_queue(queue_logger, _link_speed_host, _queue_size, false);
             queues_switch_host[i][j]->setName("SW" + ntoa(i) + "->DST" + ntoa(j));
 
             pipes_switch_host[i][j] = new Pipe(_link_latency_host, *_event_list);
@@ -220,10 +224,24 @@ void DragonflyTopology::init_network() {
         }
     }
 
+    int total_queues = _no_switches * ((_a - 1) + _h);
+    int no_failures = total_queues * _fail_percentage;
+    std::unordered_set<int> failed_queues;
+
+    if (no_failures > 0) {
+        std::mt19937 gen(std::random_device{}());
+        std::uniform_int_distribution<size_t> dist(0, total_queues - 1);
+        while (failed_queues.size() < static_cast<size_t>(no_failures))
+            failed_queues.insert(dist(gen));
+    }
+
+    int queue_index = 0;
+
     // Create all links between Switches and Switches
     // i = each switch
     for (uint32_t i = 0; i < _no_switches; i++) {
         uint32_t group_id = i / _a;
+        bool fail_queue = false;
 
         // Within group (full mesh)
         // j = each switch within same group with higher ID
@@ -231,22 +249,26 @@ void DragonflyTopology::init_network() {
             // i → j
             queue_logger = _logger_factory == NULL ? NULL : _logger_factory->createQueueLogger();
 
+            fail_queue = failed_queues.find(queue_index) != failed_queues.end();
             queues_switch_switch[i][j] =
-                alloc_switch_queue(queue_logger, _link_speed_local, _queue_size);
+                alloc_switch_queue(queue_logger, _link_speed_local, _queue_size, fail_queue);
             queues_switch_switch[i][j]->setName("SW" + ntoa(i) + "-I->SW" + ntoa(j));
 
             pipes_switch_switch[i][j] = new Pipe(get_link_latency(i, j), *_event_list);
             pipes_switch_switch[i][j]->setName("Pipe-SW" + ntoa(i) + "-I->SW" + ntoa(j));
+            queue_index++;
 
             // j → i
             queue_logger = _logger_factory == NULL ? NULL : _logger_factory->createQueueLogger();
 
+            fail_queue = failed_queues.find(queue_index) != failed_queues.end();
             queues_switch_switch[j][i] =
-                alloc_switch_queue(queue_logger, _link_speed_local, _queue_size);
+                alloc_switch_queue(queue_logger, _link_speed_local, _queue_size, fail_queue);
             queues_switch_switch[j][i]->setName("SW" + ntoa(j) + "-I->SW" + ntoa(i));
 
             pipes_switch_switch[j][i] = new Pipe(get_link_latency(i, j), *_event_list);
             pipes_switch_switch[j][i]->setName("Pipe-SW" + ntoa(j) + "-I->SW" + ntoa(i));
+            queue_index++;
 
             // Add ports and set remote endpoints
             switches[i]->addPort(queues_switch_switch[i][j]);
@@ -265,12 +287,14 @@ void DragonflyTopology::init_network() {
             // i → j
             queue_logger = _logger_factory == NULL ? NULL : _logger_factory->createQueueLogger();
 
+            fail_queue = failed_queues.find(queue_index) != failed_queues.end();
             queues_switch_switch[i][j] =
-                alloc_switch_queue(queue_logger, _link_speed_global, _queue_size);
+                alloc_switch_queue(queue_logger, _link_speed_global, _queue_size, fail_queue);
             queues_switch_switch[i][j]->setName("SW" + ntoa(i) + "-G->SW" + ntoa(j));
 
             pipes_switch_switch[i][j] = new Pipe(get_link_latency(i, j), *_event_list);
             pipes_switch_switch[i][j]->setName("Pipe-SW" + ntoa(i) + "-G->SW" + ntoa(j));
+            queue_index++;
 
             // Add ports and set remote endpoints
             switches[i]->addPort(queues_switch_switch[i][j]);
@@ -379,7 +403,8 @@ Queue* DragonflyTopology::alloc_host_queue(QueueLogger* queue_logger, linkspeed_
 
 Queue* DragonflyTopology::alloc_switch_queue(QueueLogger* queue_logger,
                                              linkspeed_bps linkspeed,
-                                             mem_b queue_size) {
+                                             mem_b queue_size,
+                                             bool is_failing) {
     switch (_queue_type) {
         case RANDOM: {
             mem_b max_size = _queue_size;
@@ -396,6 +421,9 @@ Queue* DragonflyTopology::alloc_switch_queue(QueueLogger* queue_logger,
                                                    trim_size, trim_disable);
             if (_enable_ecn)
                 q->set_ecn_thresholds(_ecn_low, _ecn_high);
+
+            if (is_failing)
+                q->set_fail_rate(_fail_packet_rate);
 
             return q;
         }

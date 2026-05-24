@@ -247,7 +247,9 @@ public:
     vector <UecSrcPort*> _ports;
     struct sendRecord {
         // need a constructor to be able to put this in a map
-        sendRecord(mem_b psize, simtime_picosec stime) : pkt_size(psize), send_time(stime){};
+        sendRecord(uint32_t ppath, mem_b psize, simtime_picosec stime)
+            : path_id(ppath), pkt_size(psize), send_time(stime){};
+        uint32_t path_id;
         mem_b pkt_size;
         simtime_picosec send_time;
     };
@@ -272,7 +274,7 @@ public:
     mem_b sendRtxPacket(const Route& route);
     void sendRTS();
     void sendProbe();
-    void createSendRecord(UecDataPacket::seq_t seqno, mem_b pkt_size);
+    void createSendRecord(uint32_t path_id, UecDataPacket::seq_t seqno, mem_b pkt_size);
     void queueForRtx(UecBasePacket::seq_t seqno, mem_b pkt_size);
     bool validateSendTs(UecBasePacket::seq_t acked_psn, bool rtx_echo);
     void recalculateRTO();
@@ -297,6 +299,7 @@ public:
     void processNack(const UecNackPacket& pkt);
     void processPull(const UecPullPacket& pkt);
     void runSleek(uint32_t ooo, UecBasePacket::seq_t cum_ack);
+    void logFlowCompletionMetric();
 
     //added for NSCC
     bool can_send_NSCC(mem_b pkt_size);
@@ -556,6 +559,11 @@ class UecSink : public DataReceiver {
 
     UecBasePacket::pull_quanta rtx_backlog() { return _retx_backlog; }
     const Stats& stats() const { return _stats; }
+    uint64_t oooCount() const { return _stats.out_of_order; }
+    double oooAvgDistance() const {
+        return _stats.out_of_order ? double(_ooo_distance_sum) / double(_stats.out_of_order) : 0.0;
+    }
+    UecBasePacket::seq_t oooMaxDistance() const { return _ooo_distance_max; }
     void connectPort(uint32_t port_num, UecSrc& src, const Route& routeback);
     const Route* getPortRoute(uint32_t port_num) const {return _ports[port_num]->route();}
     UecSinkPort* getPort(uint32_t port_num) {return _ports[port_num];}
@@ -667,6 +675,8 @@ class UecSink : public DataReceiver {
         _epsn_rx_bitmap;  // list of packets above a hole, that we've received
 
     uint32_t _out_of_order_count;
+    uint64_t _ooo_distance_sum;
+    UecBasePacket::seq_t _ooo_distance_max;
     bool _ack_request;
 
     uint16_t _entropy;

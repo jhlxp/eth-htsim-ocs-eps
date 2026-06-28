@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include "network.h"
 #include "pipe.h"
+#include "queue.h"
 #include "eventlist.h"
 #include "logfile.h"
 #include "uec_logger.h"
@@ -28,8 +29,12 @@
 #include "logsim-interface.h"
 #include "fat_tree_topology.h"
 #include "fat_tree_switch.h"
+#include "huawei_topology.h"
 
+#include <algorithm>
 #include <list>
+#include <stdexcept>
+#include <vector>
 
 // Simulation params
 
@@ -46,7 +51,143 @@ EventList eventlist;
 
 void exit_error(char* progr) {
     cout << "Usage " << progr << " [-nodes N]\n\t[-cwnd cwnd_size]\n\t[-q queue_size]\n\t[-queue_type composite|random|lossless|lossless_input|]\n\t[-tm traffic_matrix_file]\n\t[-strat route_strategy (single,rand,perm,pull,ecmp,\n\tecmp_host path_count,ecmp_ar,ecmp_rr,\n\tecmp_host_ar ar_thresh)]\n\t[-log log_level]\n\t[-seed random_seed]\n\t[-end end_time_in_usec]\n\t[-mtu MTU]\n\t[-hop_latency x] per hop wire latency in us,default 1\n\t[-target_q_delay x] target_queuing_delay in us, default is 6us \n\t[-switch_latency x] switching latency in us, default 0\n\t[-host_queue_type  swift|prio|fair_prio]\n\t[-logtime dt] sample time for sinklogger, etc\n\t[-conn_reuse] enable connection reuse" << endl;
+    cout << "\t[-local_tray_size N] rank group size for direct intra-server routing\n"
+         << "\t[-local_linkspeed Mbps] direct intra-server link speed, default host linkspeed\n"
+         << "\t[-local_latency_ns ns] direct intra-server one-way latency, default 200ns"
+         << endl;
     exit(1);
+}
+
+Route* make_direct_local_route(
+        int src,
+        int dst,
+        uint32_t port,
+        PacketSink* final_sink,
+        linkspeed_bps linkspeed,
+        mem_b queuesize,
+        simtime_picosec latency,
+        const string& direction) {
+    Route* route = new Route();
+
+    Queue* queue = new Queue(linkspeed, queuesize, eventlist, nullptr);
+    queue->forceName("LOCAL_" + direction + "_Q_SRC_" + ntoa(src)
+                     + "_DST_" + ntoa(dst) + "_P_" + ntoa(port));
+
+    Pipe* pipe = new Pipe(latency, eventlist);
+    pipe->forceName("LOCAL_" + direction + "_P_SRC_" + ntoa(src)
+                    + "_DST_" + ntoa(dst) + "_P_" + ntoa(port));
+
+    route->push_back(queue);
+    route->push_back(pipe);
+    route->push_back(final_sink);
+    return route;
+}
+
+enum class HuaweiOcsDataMode {
+    OFF,
+    SPRAYPOINT,
+    KSP,
+};
+
+enum class HuaweiOcsDataChoice {
+    FLOW_HASH,
+    PACKET_RR,
+};
+
+struct HuaweiOcsDataConfig {
+    HuaweiOcsDataMode mode = HuaweiOcsDataMode::OFF;
+    HuaweiOcsDataChoice choice = HuaweiOcsDataChoice::PACKET_RR;
+    uint32_t groups = 0;
+    uint32_t ranks_per_group = 0;
+    uint32_t ranks_per_tray = 0;
+    uint32_t l1_planes = 1;
+    uint32_t l1_eps_per_l1_plane = 4;
+    uint32_t degree = 0;
+    uint32_t ocs_seed = 42;
+    uint32_t spray_p = 4;
+    uint32_t spray_h = 2;
+    int32_t spray_levels = -1;
+    uint32_t ksp_k = 8;
+    uint32_t ksp_max_hops = 0;
+    uint32_t ksp_seed = 42;
+    uint32_t max_paths_per_pair = 100000;
+    simtime_picosec link_latency = timeFromUs(1.0);
+};
+
+static HuaweiOcsDataMode parse_huawei_ocs_mode(const string& value) {
+    if (value == "off" || value == "none") {
+        return HuaweiOcsDataMode::OFF;
+    }
+    if (value == "spraypoint") {
+        return HuaweiOcsDataMode::SPRAYPOINT;
+    }
+    if (value == "ksp") {
+        return HuaweiOcsDataMode::KSP;
+    }
+    throw invalid_argument("unknown Huawei OCS mode: " + value);
+}
+
+static HuaweiOcsDataChoice parse_huawei_ocs_choice(const string& value) {
+    if (value == "flow_hash" || value == "flow") {
+        return HuaweiOcsDataChoice::FLOW_HASH;
+    }
+    if (value == "packet_rr" || value == "spray" || value == "packet") {
+        return HuaweiOcsDataChoice::PACKET_RR;
+    }
+    throw invalid_argument("unknown Huawei OCS choice: " + value);
+}
+
+static string huawei_ocs_mode_name(HuaweiOcsDataMode mode) {
+    switch (mode) {
+    case HuaweiOcsDataMode::OFF:
+        return "off";
+    case HuaweiOcsDataMode::SPRAYPOINT:
+        return "spraypoint";
+    case HuaweiOcsDataMode::KSP:
+        return "ksp";
+    }
+    return "unknown";
+}
+
+static string huawei_ocs_choice_name(HuaweiOcsDataChoice choice) {
+    switch (choice) {
+    case HuaweiOcsDataChoice::FLOW_HASH:
+        return "flow_hash";
+    case HuaweiOcsDataChoice::PACKET_RR:
+        return "packet_rr";
+    }
+    return "unknown";
+}
+
+static HuaweiOcsDataConfig normalize_huawei_ocs_config(
+        const HuaweiOcsDataConfig& cfg,
+        uint32_t no_of_nodes) {
+    HuaweiOcsDataConfig normalized = cfg;
+    if (normalized.mode == HuaweiOcsDataMode::OFF) {
+        return normalized;
+    }
+    if (normalized.groups == 0) {
+        throw invalid_argument("Huawei OCS mode requires -huawei_ocs_groups");
+    }
+    if (normalized.l1_planes == 0 || normalized.l1_eps_per_l1_plane == 0) {
+        throw invalid_argument("Huawei OCS mode requires positive L1 plane parameters");
+    }
+    if (normalized.l1_eps_per_l1_plane % 2 != 0) {
+        throw invalid_argument("Huawei OCS l1_eps_per_l1_plane must be even for coupled ports");
+    }
+    if (normalized.ranks_per_group == 0) {
+        if (no_of_nodes % normalized.groups != 0) {
+            throw invalid_argument("Huawei OCS could not infer ranks_per_group from nodes/groups");
+        }
+        normalized.ranks_per_group = no_of_nodes / normalized.groups;
+    }
+    if (normalized.ranks_per_tray == 0) {
+        throw invalid_argument("Huawei OCS requires -local_tray_size or -huawei_ranks_per_tray");
+    }
+    if (normalized.groups * normalized.ranks_per_group < no_of_nodes) {
+        throw invalid_argument("Huawei OCS groups * ranks_per_group is smaller than no_of_nodes");
+    }
+    return normalized;
 }
 
 simtime_picosec calculate_rtt(FatTreeTopologyCfg* t_cfg, linkspeed_bps host_linkspeed) { 
@@ -60,11 +201,77 @@ simtime_picosec calculate_rtt(FatTreeTopologyCfg* t_cfg, linkspeed_bps host_link
     return rtt;
 };
 
+simtime_picosec calculate_rtt_from_one_way_hops(
+        uint32_t one_way_hops,
+        simtime_picosec one_way_link_latency,
+        linkspeed_bps link_speed) {
+    simtime_picosec serialization =
+        (Packet::data_packet_size() * 8 / speedAsGbps(link_speed) * one_way_hops * 1000)
+        + (UecBasePacket::get_ack_size() * 8 / speedAsGbps(link_speed) * one_way_hops * 1000);
+    return 2 * one_way_hops * one_way_link_latency + serialization;
+}
+
+uint32_t calculate_bdp_pkt_from_rtt(simtime_picosec rtt, linkspeed_bps host_linkspeed) {
+    return ceil((timeAsSec(rtt) * (host_linkspeed / 8)) / (double)Packet::data_packet_size());
+}
+
 uint32_t calculate_bdp_pkt(FatTreeTopologyCfg* t_cfg, linkspeed_bps host_linkspeed) {
     simtime_picosec rtt = calculate_rtt(t_cfg, host_linkspeed);
-    uint32_t bdp_pkt = ceil((timeAsSec(rtt) * (host_linkspeed/8)) / (double)Packet::data_packet_size()); 
+    return calculate_bdp_pkt_from_rtt(rtt, host_linkspeed);
+}
 
-    return bdp_pkt;
+uint32_t estimate_expander_hops(uint32_t nodes, uint32_t degree) {
+    if (nodes <= 1) {
+        return 0;
+    }
+    if (degree <= 1) {
+        return nodes - 1;
+    }
+    double hops = ceil(log(static_cast<double>(nodes)) / log(static_cast<double>(degree)));
+    return max<uint32_t>(1, static_cast<uint32_t>(hops) + 1);
+}
+
+uint32_t estimate_huawei_ocs_hops(const HuaweiOcsDataConfig& cfg) {
+    uint32_t logical_nodes_per_group = cfg.l1_planes * cfg.l1_eps_per_l1_plane / 2;
+    uint32_t logical_nodes = cfg.groups * logical_nodes_per_group;
+
+    if (cfg.mode == HuaweiOcsDataMode::KSP && cfg.ksp_max_hops > 0) {
+        return cfg.ksp_max_hops;
+    }
+    if (cfg.mode == HuaweiOcsDataMode::SPRAYPOINT && cfg.spray_levels > 0) {
+        return static_cast<uint32_t>(cfg.spray_levels) + 1;
+    }
+    return estimate_expander_hops(logical_nodes, cfg.degree);
+}
+
+uint32_t huawei_external_one_way_hops(const HuaweiOcsDataConfig& cfg) {
+    // host->L0, L0->L1, cross-group OCS path, L1->L0, L0->host.
+    return 4 + max<uint32_t>(1, estimate_huawei_ocs_hops(cfg));
+}
+
+simtime_picosec calculate_huawei_network_rtt(
+        const HuaweiOcsDataConfig& cfg,
+        linkspeed_bps external_linkspeed) {
+    return calculate_rtt_from_one_way_hops(
+            huawei_external_one_way_hops(cfg),
+            cfg.link_latency,
+            external_linkspeed);
+}
+
+simtime_picosec calculate_huawei_pair_rtt(
+        const HuaweiOcsDataConfig& cfg,
+        uint32_t src,
+        uint32_t dst,
+        linkspeed_bps external_linkspeed,
+        linkspeed_bps local_linkspeed,
+        simtime_picosec local_latency) {
+    if (src != dst && src / cfg.ranks_per_tray == dst / cfg.ranks_per_tray) {
+        return calculate_rtt_from_one_way_hops(1, local_latency, local_linkspeed);
+    }
+    if (src / cfg.ranks_per_group == dst / cfg.ranks_per_group) {
+        return calculate_rtt_from_one_way_hops(4, cfg.link_latency, external_linkspeed);
+    }
+    return calculate_huawei_network_rtt(cfg, external_linkspeed);
 }
 
 int main(int argc, char **argv) {
@@ -78,6 +285,12 @@ int main(int argc, char **argv) {
     uint32_t tiers = 3; // we support 2 and 3 tier fattrees
     uint32_t planes = 1;  // multi-plane topologies
     uint32_t ports = 1;  // ports per NIC
+    uint32_t local_tray_size = 0;
+    linkspeed_bps local_linkspeed = 0;
+    simtime_picosec local_latency = timeFromNs(200.0);
+    uint64_t local_flow_count = 0;
+    uint64_t huawei_ocs_flow_count = 0;
+    HuaweiOcsDataConfig huawei_ocs_cfg;
     bool disable_trim = false; // Disable trimming, drop instead
     uint16_t trimsize = 64; // size of a trimmed packet
     simtime_picosec logtime = timeFromMs(0.25); // ms;
@@ -112,6 +325,51 @@ int main(int argc, char **argv) {
     bool sender_driven = true;
 
     RouteStrategy route_strategy = NOT_SET;
+    string strat_param = "default";
+
+    auto route_strategy_name = [](RouteStrategy strategy) -> string {
+        switch (strategy) {
+        case NOT_SET:
+            return "not_set";
+        case SINGLE_PATH:
+            return "single_path";
+        case SCATTER_PERMUTE:
+            return "scatter_permute";
+        case SCATTER_RANDOM:
+            return "scatter_random";
+        case PULL_BASED:
+            return "pull_based";
+        case SCATTER_ECMP:
+            return "scatter_ecmp";
+        case ECMP_FIB:
+            return "ecmp_fib";
+        case ECMP_FIB_ECN:
+            return "ecmp_fib_ecn";
+        case REACTIVE_ECN:
+            return "reactive_ecn";
+        }
+        return "unknown";
+    };
+
+    auto load_balancing_name = [](LoadBalancing_Algo algo) -> string {
+        switch (algo) {
+        case BITMAP:
+            return "bitmap";
+        case REPS:
+            return "reps";
+        case REPS_LEGACY:
+            return "reps_legacy";
+        case FREEZING:
+            return "freezing";
+        case OBLIVIOUS:
+            return "oblivious";
+        case MIXED:
+            return "mixed";
+        case ECMP:
+            return "ecmp";
+        }
+        return "unknown";
+    };
     
     int seed = 13;
     int i = 1;
@@ -164,6 +422,98 @@ int main(int argc, char **argv) {
             cout << "planes " << planes << endl;
             cout << "ports per NIC " << ports << endl;
             assert(planes >= 1 && planes <= 8);
+            i++;
+        } else if (!strcmp(argv[i],"-local_tray_size")) {
+            local_tray_size = atoi(argv[i+1]);
+            cout << "local_tray_size " << local_tray_size << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-local_linkspeed")) {
+            local_linkspeed = speedFromMbps(atof(argv[i+1]));
+            cout << "local linkspeed " << local_linkspeed/1000000000 << "Gbps" << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-local_latency_ns")) {
+            local_latency = timeFromNs(atof(argv[i+1]));
+            cout << "local latency " << timeAsNs(local_latency) << "ns" << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ocs_mode")) {
+            try {
+                huawei_ocs_cfg.mode = parse_huawei_ocs_mode(argv[i+1]);
+            } catch (const exception& e) {
+                cout << e.what() << endl;
+                exit(1);
+            }
+            cout << "huawei_ocs_mode " << argv[i+1] << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ocs_choice")) {
+            try {
+                huawei_ocs_cfg.choice = parse_huawei_ocs_choice(argv[i+1]);
+            } catch (const exception& e) {
+                cout << e.what() << endl;
+                exit(1);
+            }
+            cout << "huawei_ocs_choice " << argv[i+1] << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ocs_groups")) {
+            huawei_ocs_cfg.groups = atoi(argv[i+1]);
+            cout << "huawei_ocs_groups " << huawei_ocs_cfg.groups << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ranks_per_group")) {
+            huawei_ocs_cfg.ranks_per_group = atoi(argv[i+1]);
+            cout << "huawei_ranks_per_group " << huawei_ocs_cfg.ranks_per_group << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ranks_per_tray")) {
+            huawei_ocs_cfg.ranks_per_tray = atoi(argv[i+1]);
+            cout << "huawei_ranks_per_tray " << huawei_ocs_cfg.ranks_per_tray << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_l1_planes")) {
+            huawei_ocs_cfg.l1_planes = atoi(argv[i+1]);
+            cout << "huawei_l1_planes " << huawei_ocs_cfg.l1_planes << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_l1_eps_per_l1_plane")) {
+            huawei_ocs_cfg.l1_eps_per_l1_plane = atoi(argv[i+1]);
+            cout << "huawei_l1_eps_per_l1_plane " << huawei_ocs_cfg.l1_eps_per_l1_plane << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ocs_degree")) {
+            huawei_ocs_cfg.degree = atoi(argv[i+1]);
+            cout << "huawei_ocs_degree " << huawei_ocs_cfg.degree << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ocs_seed")) {
+            huawei_ocs_cfg.ocs_seed = atoi(argv[i+1]);
+            cout << "huawei_ocs_seed " << huawei_ocs_cfg.ocs_seed << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_spray_p")) {
+            huawei_ocs_cfg.spray_p = atoi(argv[i+1]);
+            cout << "huawei_spray_p " << huawei_ocs_cfg.spray_p << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_spray_h")) {
+            huawei_ocs_cfg.spray_h = atoi(argv[i+1]);
+            cout << "huawei_spray_h " << huawei_ocs_cfg.spray_h << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_spray_levels")) {
+            string value = argv[i+1];
+            huawei_ocs_cfg.spray_levels = value == "auto" ? -1 : atoi(argv[i+1]);
+            cout << "huawei_spray_levels " << value << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ksp_k")) {
+            huawei_ocs_cfg.ksp_k = atoi(argv[i+1]);
+            cout << "huawei_ksp_k " << huawei_ocs_cfg.ksp_k << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ksp_max_hops")) {
+            string value = argv[i+1];
+            huawei_ocs_cfg.ksp_max_hops = value == "auto" ? 0 : atoi(argv[i+1]);
+            cout << "huawei_ksp_max_hops " << value << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ksp_seed")) {
+            huawei_ocs_cfg.ksp_seed = atoi(argv[i+1]);
+            cout << "huawei_ksp_seed " << huawei_ocs_cfg.ksp_seed << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ksp_max_paths_per_pair")) {
+            huawei_ocs_cfg.max_paths_per_pair = atoi(argv[i+1]);
+            cout << "huawei_ksp_max_paths_per_pair " << huawei_ocs_cfg.max_paths_per_pair << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_ocs_latency_ns")) {
+            huawei_ocs_cfg.link_latency = timeFromNs(atof(argv[i+1]));
+            cout << "huawei_ocs_latency " << timeAsNs(huawei_ocs_cfg.link_latency) << "ns" << endl;
             i++;
         } else if (!strcmp(argv[i],"-receiver_cc_only")) {
             UecSrc::_sender_based_cc = false;
@@ -328,7 +678,7 @@ int main(int argc, char **argv) {
             i++;
         } else if (!strcmp(argv[i],"-topo")){
             topo_file = argv[i+1];
-            cout << "FatTree topology input file: "<< topo_file << endl;
+            cout << "Topology input file: "<< topo_file << endl;
             i++;
         } else if (!strcmp(argv[i],"-q")){
             param_queuesize_set = true;
@@ -485,18 +835,22 @@ int main(int argc, char **argv) {
             }
             i++;
         } else if (!strcmp(argv[i],"-strat")){
+            strat_param = argv[i+1];
             if (!strcmp(argv[i+1], "ecmp_host")) {
                 route_strategy = ECMP_FIB;
                 FatTreeSwitch::set_strategy(FatTreeSwitch::ECMP);
+                HuaweiSwitch::set_strategy(HuaweiSwitch::ECMP);
             } else if (!strcmp(argv[i+1], "rr_ecmp")) {
                 //this is the host route strategy;
                 route_strategy = ECMP_FIB_ECN;
                 qt = COMPOSITE_ECN_LB;
                 //this is the switch route strategy. 
                 FatTreeSwitch::set_strategy(FatTreeSwitch::RR_ECMP);
+                HuaweiSwitch::set_strategy(HuaweiSwitch::RR);
             } else if (!strcmp(argv[i+1], "ecmp_host_ecn")) {
                 route_strategy = ECMP_FIB_ECN;
                 FatTreeSwitch::set_strategy(FatTreeSwitch::ECMP);
+                HuaweiSwitch::set_strategy(HuaweiSwitch::ECMP);
                 qt = COMPOSITE_ECN_LB;
             } else if (!strcmp(argv[i+1], "reactive_ecn")) {
                 // Jitu's suggestion for something really simple
@@ -504,14 +858,17 @@ int main(int argc, char **argv) {
                 //this is the host route strategy;
                 route_strategy = REACTIVE_ECN;
                 FatTreeSwitch::set_strategy(FatTreeSwitch::ECMP);
+                HuaweiSwitch::set_strategy(HuaweiSwitch::ECMP);
                 qt = COMPOSITE_ECN_LB;
             } else if (!strcmp(argv[i+1], "ecmp_ar")) {
                 route_strategy = ECMP_FIB;
                 path_entropy_size = 1;
                 FatTreeSwitch::set_strategy(FatTreeSwitch::ADAPTIVE_ROUTING);
+                HuaweiSwitch::set_strategy(HuaweiSwitch::ECMP);
             } else if (!strcmp(argv[i+1], "ecmp_host_ar")) {
                 route_strategy = ECMP_FIB;
                 FatTreeSwitch::set_strategy(FatTreeSwitch::ECMP_ADAPTIVE);
+                HuaweiSwitch::set_strategy(HuaweiSwitch::ECMP);
                 //the stuff below obsolete
                 //FatTreeSwitch::set_ar_fraction(atoi(argv[i+2]));
                 //cout << "AR fraction: " << atoi(argv[i+2]) << endl;
@@ -521,6 +878,7 @@ int main(int argc, char **argv) {
                 route_strategy = ECMP_FIB;
                 path_entropy_size = 1;
                 FatTreeSwitch::set_strategy(FatTreeSwitch::RR);
+                HuaweiSwitch::set_strategy(HuaweiSwitch::RR);
             }
             i++;
         } else {
@@ -538,6 +896,12 @@ int main(int argc, char **argv) {
     assert(trimsize >= 64 && trimsize <= (uint32_t)packet_size);
 
     cout << "Packet size (MTU) is " << packet_size << endl;
+    if (local_linkspeed == 0) {
+        local_linkspeed = linkspeed;
+    }
+    if (huawei_ocs_cfg.ranks_per_tray == 0 && local_tray_size > 0) {
+        huawei_ocs_cfg.ranks_per_tray = local_tray_size;
+    }
 
     srand(seed);
     srandom(seed);
@@ -550,7 +914,9 @@ int main(int argc, char **argv) {
 
     if (route_strategy==NOT_SET){
         route_strategy = ECMP_FIB;
+        strat_param = "default_ecmp_host";
         FatTreeSwitch::set_strategy(FatTreeSwitch::ECMP);
+        HuaweiSwitch::set_strategy(HuaweiSwitch::ECMP);
     }
 
     /*
@@ -655,6 +1021,30 @@ int main(int argc, char **argv) {
     }
 
     no_of_nodes = conns->N;
+    if (local_tray_size > 0) {
+        if (no_of_nodes % local_tray_size != 0) {
+            cerr << "local_tray_size " << local_tray_size
+                 << " must divide the node count " << no_of_nodes << endl;
+            exit(1);
+        }
+        cout << "Local tray direct routing enabled: tray_size " << local_tray_size
+             << ", local linkspeed " << local_linkspeed/1000000000 << "Gbps"
+             << ", local one-way latency " << timeAsNs(local_latency) << "ns"
+             << endl;
+    }
+
+    bool huawei_mode = huawei_ocs_cfg.mode != HuaweiOcsDataMode::OFF;
+    if (huawei_mode) {
+        try {
+            huawei_ocs_cfg = normalize_huawei_ocs_config(huawei_ocs_cfg, no_of_nodes);
+        } catch (const exception& e) {
+            cerr << "Failed to initialize Huawei OCS switch-local topology config: "
+                 << e.what() << endl;
+            exit(1);
+        }
+        planes = huawei_ocs_cfg.l1_planes;
+        ports = planes;
+    }
 
     if (!param_queuesize_set) {
         cout << "Automatic queue sizing enabled ";        
@@ -672,48 +1062,187 @@ int main(int argc, char **argv) {
     }
 
     unique_ptr<FatTreeTopologyCfg> topo_cfg;
-    if (topo_file) {
-        topo_cfg = FatTreeTopologyCfg::load(topo_file, memFromPkt(queuesize_pkt), qt, snd_type);
+    simtime_picosec network_max_unloaded_rtt = 0;
+    uint32_t bdp_pkt = 0;
+    mem_b queuesize = 0;
 
-        if (topo_cfg->no_of_nodes() != no_of_nodes) {
-            cerr << "Mismatch between connection matrix (" << no_of_nodes << " nodes) and topology ("
-                    << topo_cfg->no_of_nodes() << " nodes)" << endl;
+    if (huawei_mode) {
+        if (topo_file) {
+            cout << "Huawei OCS mode ignores topology input file: " << topo_file << endl;
+        }
+        if (topo_num_failed > 0 || !conns->failures.empty()) {
+            cerr << "Huawei OCS mode does not support FatTree-style failed links in the connection matrix" << endl;
             exit(1);
         }
+
+        network_max_unloaded_rtt = calculate_huawei_network_rtt(huawei_ocs_cfg, linkspeed);
+        bdp_pkt = calculate_bdp_pkt_from_rtt(network_max_unloaded_rtt, linkspeed);
+        if (!param_queuesize_set) {
+            queuesize = memFromPkt(bdp_pkt * queue_size_bdp_factor);
+        } else {
+            queuesize = memFromPkt(queuesize_pkt);
+        }
+
+        uint32_t huawei_total_trays =
+            (no_of_nodes + huawei_ocs_cfg.ranks_per_tray - 1) / huawei_ocs_cfg.ranks_per_tray;
+        uint32_t huawei_trays_per_group =
+            (huawei_ocs_cfg.ranks_per_group + huawei_ocs_cfg.ranks_per_tray - 1)
+            / huawei_ocs_cfg.ranks_per_tray;
+        uint32_t huawei_l0_count = huawei_total_trays * huawei_ocs_cfg.l1_planes;
+        uint32_t huawei_l0_per_group = huawei_trays_per_group * huawei_ocs_cfg.l1_planes;
+        uint32_t huawei_l1_per_group =
+            huawei_ocs_cfg.l1_planes * huawei_ocs_cfg.l1_eps_per_l1_plane;
+        uint32_t huawei_l1_count = huawei_ocs_cfg.groups * huawei_l1_per_group;
+        uint32_t huawei_logical_nodes_per_group =
+            huawei_ocs_coupled_logical_nodes_per_group(
+                    huawei_ocs_cfg.l1_planes, huawei_ocs_cfg.l1_eps_per_l1_plane);
+        uint32_t huawei_logical_nodes = huawei_ocs_cfg.groups * huawei_logical_nodes_per_group;
+        uint32_t huawei_full_cross_group_degree =
+            huawei_logical_nodes > huawei_logical_nodes_per_group
+                ? huawei_logical_nodes - huawei_logical_nodes_per_group
+                : 0;
+
+        cout << endl;
+        cout << "#----------- HUAWEI TOPOLOGY begin ------------" << endl;
+        cout << "[INPUT]" << endl;
+        cout << "nodes " << no_of_nodes << endl;
+        cout << "groups " << huawei_ocs_cfg.groups << endl;
+        cout << "ranks_per_group " << huawei_ocs_cfg.ranks_per_group << endl;
+        cout << "ranks_per_tray " << huawei_ocs_cfg.ranks_per_tray << endl;
+        cout << "l1_planes_ports " << ports << endl;
+        cout << "l1_eps_per_l1_plane " << huawei_ocs_cfg.l1_eps_per_l1_plane << endl;
+        cout << "ocs_degree " << huawei_ocs_cfg.degree << endl;
+        cout << "ocs_seed " << huawei_ocs_cfg.ocs_seed << endl;
+        cout << endl;
+        cout << "[DERIVED]" << endl;
+        cout << "total_trays " << huawei_total_trays << endl;
+        cout << "trays_per_group " << huawei_trays_per_group << endl;
+        cout << "l0_switches " << huawei_l0_count << endl;
+        cout << "l0_switches_per_group " << huawei_l0_per_group << endl;
+        cout << "l1_switches " << huawei_l1_count << endl;
+        cout << "l1_switches_per_group " << huawei_l1_per_group << endl;
+        cout << "ocs_coupled_logical_nodes " << huawei_logical_nodes << endl;
+        cout << "ocs_coupled_logical_nodes_per_group " << huawei_logical_nodes_per_group << endl;
+        cout << "ocs_full_cross_group_degree " << huawei_full_cross_group_degree << endl;
+        cout << "ocs_degree_is_full_cross_group "
+             << (huawei_ocs_cfg.degree >= huawei_full_cross_group_degree ? "yes" : "no")
+             << endl;
+        cout << "#----------- HUAWEI TOPOLOGY END ------------" << endl;
+        cout << endl;
+
+        cout << "#----------- HUAWEI ROUTING begin ------------" << endl;
+        cout << "[INPUT]" << endl;
+        cout << "strat_param " << strat_param << endl;
+        cout << "load_balancing_algo " << load_balancing_name(load_balancing_algo) << endl;
+        cout << "huawei_ocs_mode " << huawei_ocs_mode_name(huawei_ocs_cfg.mode) << endl;
+        cout << "huawei_ocs_choice " << huawei_ocs_choice_name(huawei_ocs_cfg.choice) << endl;
+        if (huawei_ocs_cfg.mode == HuaweiOcsDataMode::KSP) {
+            cout << "huawei_ksp_k " << huawei_ocs_cfg.ksp_k << endl;
+            cout << "huawei_ksp_max_hops ";
+            if (huawei_ocs_cfg.ksp_max_hops == 0) {
+                cout << "auto";
+            } else {
+                cout << huawei_ocs_cfg.ksp_max_hops;
+            }
+            cout << endl;
+            cout << "huawei_ksp_seed " << huawei_ocs_cfg.ksp_seed << endl;
+            cout << "huawei_ksp_max_paths_per_pair " << huawei_ocs_cfg.max_paths_per_pair << endl;
+        } else if (huawei_ocs_cfg.mode == HuaweiOcsDataMode::SPRAYPOINT) {
+            cout << "huawei_spray_p " << huawei_ocs_cfg.spray_p << endl;
+            cout << "huawei_spray_h " << huawei_ocs_cfg.spray_h << endl;
+            cout << "huawei_spray_levels ";
+            if (huawei_ocs_cfg.spray_levels < 0) {
+                cout << "auto";
+            } else {
+                cout << huawei_ocs_cfg.spray_levels;
+            }
+            cout << endl;
+        }
+        cout << endl;
+        cout << "[DERIVED]" << endl;
+        cout << "host_route_strategy " << route_strategy_name(route_strategy) << endl;
+        cout << "source_ports_per_nonlocal_flow " << ports << endl;
+        cout << "local_tray_direct_enabled " << (huawei_ocs_cfg.ranks_per_tray > 1 ? "yes" : "no") << endl;
+        cout << "switch_local_fib_enabled yes" << endl;
+        cout << "estimated_ocs_hops " << estimate_huawei_ocs_hops(huawei_ocs_cfg) << endl;
+        cout << "#----------- HUAWEI ROUTING END ------------" << endl;
+        cout << endl;
+
+        cout << "#----------- HUAWEI LINK_QUEUE begin ------------" << endl;
+        cout << "[INPUT]" << endl;
+        cout << "external_linkspeed_gbps " << linkspeed / 1000000000 << endl;
+        cout << "local_linkspeed_gbps " << local_linkspeed / 1000000000 << endl;
+        cout << "local_latency_ns " << timeAsNs(local_latency) << endl;
+        cout << "ocs_latency_ns " << timeAsNs(huawei_ocs_cfg.link_latency) << endl;
+        cout << "mtu_bytes " << Packet::data_packet_size() << endl;
+        cout << "queue_size_mode " << (param_queuesize_set ? "fixed_packets" : "bdp_factor") << endl;
+        if (param_queuesize_set) {
+            cout << "queue_size_input_packets " << queuesize_pkt << endl;
+        } else {
+            cout << "queue_size_bdp_factor " << queue_size_bdp_factor << endl;
+        }
+        cout << endl;
+        cout << "[DERIVED]" << endl;
+        cout << "queue_size_bytes " << queuesize << endl;
+        cout << "estimated_one_way_hops " << huawei_external_one_way_hops(huawei_ocs_cfg) << endl;
+        cout << "network_max_unloaded_rtt_us " << timeAsUs(network_max_unloaded_rtt) << endl;
+        cout << "bdp_pkt " << bdp_pkt << endl;
+        cout << "#----------- HUAWEI LINK_QUEUE END ------------" << endl;
+        cout << endl;
+
+        cout << "#----------- HUAWEI OUTPUT begin ------------" << endl;
+        const char* link_sample = getenv("HTSIM_LINK_LOAD_SAMPLE");
+        const char* link_sample_us = getenv("HTSIM_LINK_LOAD_SAMPLE_US");
+        cout << "[INPUT]" << endl;
+        cout << "link_load_sample " << (link_sample ? link_sample : "0") << endl;
+        cout << "link_load_sample_us " << (link_sample_us ? link_sample_us : "1000") << endl;
+        cout << endl;
+        cout << "[DERIVED]" << endl;
+        cout << "output_metrics_dir output_metrics" << endl;
+        cout << "link_info_file output_metrics/link_info.csv" << endl;
+        cout << "link_load_file output_metrics/link_load_1ms.csv" << endl;
+        cout << "#----------- HUAWEI OUTPUT END ------------" << endl;
+        cout << endl;
     } else {
-        topo_cfg = make_unique<FatTreeTopologyCfg>(tiers, no_of_nodes, linkspeed, memFromPkt(queuesize_pkt),
-                                                   hop_latency, switch_latency, 
-                                                   qt, snd_type);
+        if (topo_file) {
+            topo_cfg = FatTreeTopologyCfg::load(topo_file, memFromPkt(queuesize_pkt), qt, snd_type);
+
+            if (topo_cfg->no_of_nodes() != no_of_nodes) {
+                cerr << "Mismatch between connection matrix (" << no_of_nodes << " nodes) and topology ("
+                     << topo_cfg->no_of_nodes() << " nodes)" << endl;
+                exit(1);
+            }
+        } else {
+            topo_cfg = make_unique<FatTreeTopologyCfg>(tiers, no_of_nodes, linkspeed, memFromPkt(queuesize_pkt),
+                                                       hop_latency, switch_latency,
+                                                       qt, snd_type);
+        }
+
+        network_max_unloaded_rtt = calculate_rtt(topo_cfg.get(), linkspeed);
+        bdp_pkt = calculate_bdp_pkt(topo_cfg.get(), linkspeed);
+        if (!param_queuesize_set) {
+            queuesize = memFromPkt(bdp_pkt * queue_size_bdp_factor);
+        } else {
+            queuesize = memFromPkt(queuesize_pkt);
+        }
+        topo_cfg->set_queue_sizes(queuesize);
+
+        if (topo_num_failed > 0) {
+            topo_cfg->set_failed_links(topo_num_failed);
+        }
+
+        if (topo_cfg->get_oversubscription_ratio() > 1 && !UecSrc::_sender_based_cc && !force_disable_oversubscribed_cc) {
+            UecSink::_oversubscribed_cc = true;
+            OversubscribedCC::setOversubscriptionRatio(topo_cfg->get_oversubscription_ratio());
+            cout << "Using simple receiver oversubscribed CC. Oversubscription ratio is " << topo_cfg->get_oversubscription_ratio() << endl;
+        }
     }
-
-    simtime_picosec network_max_unloaded_rtt = calculate_rtt(topo_cfg.get(), linkspeed);
-
-    mem_b queuesize = 0;
-    if (!param_queuesize_set) {
-        uint32_t bdp_pkt = calculate_bdp_pkt(topo_cfg.get(), linkspeed);
-        mem_b queuesize_pkt = bdp_pkt * queue_size_bdp_factor;
-        queuesize = memFromPkt(queuesize_pkt);
-    } else {
-        queuesize = memFromPkt(queuesize_pkt);
-    }
-    topo_cfg->set_queue_sizes(queuesize);
-
-    if (topo_num_failed > 0) {
-        topo_cfg->set_failed_links(topo_num_failed);
-    }
-
-    if (topo_cfg->get_oversubscription_ratio() > 1 && !UecSrc::_sender_based_cc && !force_disable_oversubscribed_cc) {
-        UecSink::_oversubscribed_cc = true;
-        OversubscribedCC::setOversubscriptionRatio(topo_cfg->get_oversubscription_ratio());
-        cout << "Using simple receiver oversubscribed CC. Oversubscription ratio is " << topo_cfg->get_oversubscription_ratio() << endl;
-    } 
 
     //2 priority queues; 3 hops for incast
     UecSrc::_min_rto = timeFromUs(15 + queuesize * 6.0 * 8 * 1000000 / linkspeed);
     cout << "Setting min RTO to " << timeAsUs(UecSrc::_min_rto) << endl;
 
     if (ecn){
-        uint32_t bdp_pkt = calculate_bdp_pkt(topo_cfg.get(), linkspeed);
         if (!param_ecn_set) {
             ecn_low = memFromPkt(ceil(bdp_pkt * 0.2));
             ecn_high = memFromPkt(ceil(bdp_pkt * 0.8));
@@ -721,36 +1250,99 @@ int main(int argc, char **argv) {
             ecn_low = memFromPkt(ecn_low);
             ecn_high = memFromPkt(ecn_high);
         }
-        cout << "Setting ECN to parameters low " << ecn_low << " high " << ecn_high <<  " enable on tor downlink " << !receiver_driven << endl;
-        topo_cfg->set_ecn_parameters(true, !receiver_driven, ecn_low, ecn_high);
+        cout << "Setting ECN to parameters low " << ecn_low << " high " << ecn_high;
+        if (huawei_mode) {
+            cout << " (Huawei queues use their own queue objects; no FatTree topo ECN table)";
+        } else {
+            cout << " enable on tor downlink " << !receiver_driven;
+            topo_cfg->set_ecn_parameters(true, !receiver_driven, ecn_low, ecn_high);
+        }
+        cout << endl;
         assert(ecn_low <= ecn_high);
         assert(ecn_high <= queuesize);
     }
 
-    cout << *topo_cfg << endl;
+    if (!huawei_mode) {
+        cout << *topo_cfg << endl;
+    }
 
     vector<unique_ptr<FatTreeTopology>> topo;
-    topo.resize(planes);
-    for (uint32_t p = 0; p < planes; p++) {
-        topo[p] = make_unique<FatTreeTopology>(topo_cfg.get(), qlf, &eventlist, nullptr);
+    if (!huawei_mode) {
+        topo.resize(planes);
+        for (uint32_t p = 0; p < planes; p++) {
+            topo[p] = make_unique<FatTreeTopology>(topo_cfg.get(), qlf, &eventlist, nullptr);
 
-        if (log_switches) {
-            topo[p]->add_switch_loggers(logfile, logtime);
+            if (log_switches) {
+                topo[p]->add_switch_loggers(logfile, logtime);
+            }
         }
+    } else if (log_switches) {
+        cout << "Huawei OCS mode ignores legacy switch loggers" << endl;
     }
     cout << "network_max_unloaded_rtt " << timeAsUs(network_max_unloaded_rtt) << endl;
+
+    unique_ptr<HuaweiTopology> huawei_topology;
+    if (huawei_ocs_cfg.mode != HuaweiOcsDataMode::OFF) {
+        HuaweiTopologyConfig hw_cfg;
+        hw_cfg.nodes = no_of_nodes;
+        hw_cfg.groups = huawei_ocs_cfg.groups;
+        hw_cfg.ranks_per_group = huawei_ocs_cfg.ranks_per_group;
+        hw_cfg.ranks_per_tray = huawei_ocs_cfg.ranks_per_tray;
+        hw_cfg.l1_planes = huawei_ocs_cfg.l1_planes;
+        hw_cfg.l1_eps_per_l1_plane = huawei_ocs_cfg.l1_eps_per_l1_plane;
+        hw_cfg.ocs_degree = huawei_ocs_cfg.degree;
+        hw_cfg.ocs_seed = huawei_ocs_cfg.ocs_seed;
+        hw_cfg.ocs_mode = huawei_ocs_cfg.mode == HuaweiOcsDataMode::SPRAYPOINT
+                ? HuaweiOcsMode::SPRAYPOINT
+                : HuaweiOcsMode::KSP;
+        hw_cfg.ocs_choice = huawei_ocs_cfg.choice == HuaweiOcsDataChoice::FLOW_HASH
+                ? HuaweiOcsChoice::FLOW_HASH
+                : HuaweiOcsChoice::PACKET_RR;
+        hw_cfg.spray_p = huawei_ocs_cfg.spray_p;
+        hw_cfg.spray_h = huawei_ocs_cfg.spray_h;
+        hw_cfg.spray_levels = huawei_ocs_cfg.spray_levels;
+        hw_cfg.ksp_k = huawei_ocs_cfg.ksp_k;
+        hw_cfg.ksp_max_hops = huawei_ocs_cfg.ksp_max_hops;
+        hw_cfg.ksp_seed = huawei_ocs_cfg.ksp_seed;
+        hw_cfg.ksp_max_paths_per_pair = huawei_ocs_cfg.max_paths_per_pair;
+        hw_cfg.external_linkspeed = linkspeed;
+        hw_cfg.local_linkspeed = local_linkspeed;
+        hw_cfg.queue_size = queuesize;
+        hw_cfg.link_latency = huawei_ocs_cfg.link_latency;
+        hw_cfg.local_latency = local_latency;
+        hw_cfg.switch_latency = switch_latency;
+        try {
+            huawei_topology = make_unique<HuaweiTopology>(hw_cfg, eventlist);
+        } catch (const exception& e) {
+            cerr << "Failed to initialize Huawei switch-local topology: "
+                 << e.what() << endl;
+            exit(1);
+        }
+        cout << "Huawei switch-local topology built: nodes " << hw_cfg.nodes
+             << ", groups " << hw_cfg.groups
+             << ", ranks_per_group " << hw_cfg.ranks_per_group
+             << ", ranks_per_tray " << hw_cfg.ranks_per_tray
+             << ", l1_planes/ports " << hw_cfg.l1_planes
+             << ", l1_eps_per_l1_plane " << hw_cfg.l1_eps_per_l1_plane
+             << ", ocs_degree " << hw_cfg.ocs_degree
+             << ", external linkspeed " << hw_cfg.external_linkspeed / 1000000000 << "Gbps"
+             << ", local linkspeed " << hw_cfg.local_linkspeed / 1000000000 << "Gbps"
+             << endl;
+    }
 
     if (UecSink::_oversubscribed_cc)
         OversubscribedCC::_base_rtt = network_max_unloaded_rtt;
 
     
-    //handle link failures specified in the connection matrix.
-    for (size_t c = 0; c < conns->failures.size(); c++){
-        failure* crt = conns->failures.at(c);
+    // Handle FatTree link failures specified in the connection matrix.
+    if (!huawei_mode) {
+        for (size_t c = 0; c < conns->failures.size(); c++){
+            failure* crt = conns->failures.at(c);
 
-        cout << "Adding link failure switch type" << crt->switch_type << " Switch ID " << crt->switch_id << " link ID "  << crt->link_id << endl;
-        // xxx we only support failures in plane 0 for now.
-        topo[0]->add_failed_link(crt->switch_type,crt->switch_id,crt->link_id);
+            cout << "Adding link failure switch type" << crt->switch_type << " Switch ID " << crt->switch_id << " link ID "  << crt->link_id << endl;
+            // xxx we only support failures in plane 0 for now.
+            topo[0]->add_failed_link(crt->switch_type,crt->switch_id,crt->link_id);
+        }
     }
 
     // Initialize congestion control algorithms
@@ -793,15 +1385,25 @@ int main(int argc, char **argv) {
 
     map<flowid_t, pair<UecSrc*, UecSink*>> flowmap;
     map<flowid_t, UecPdcSes*> flow_pdc_map;
-    if(planes != 1){
-        cout << "We are taking the plane 0 to calculate the network rtt; If all the planes have the same tiers, you can remove this check." << endl;
-        assert(false);
+    if (planes != 1) {
+        cout << "Multi-plane mode enabled: " << planes
+             << " independent topology planes, one UEC port per plane."
+             << endl;
+        if (goal_filename.size() > 0) {
+            cerr << "GOAL/ATLAHS mode does not support -planes > 1 yet; "
+                 << "traffic-matrix mode must be used for multi-plane validation." << endl;
+            exit(1);
+        }
     }
 
     // ATLAHS
     LogSimInterface *lgs = NULL;
 
     if (goal_filename.size() > 0) {
+        if (huawei_mode) {
+            cerr << "GOAL/ATLAHS mode still expects a FatTreeTopology API and is not supported with Huawei OCS mode" << endl;
+            exit(1);
+        }
         AtlahsHtsimApi *api = new AtlahsHtsimApi();
         api->setTopology(topo[0].get());
         api->cwnd_b = cwnd;
@@ -879,6 +1481,12 @@ int main(int argc, char **argv) {
         connection* crt = all_conns->at(c);
         int src = crt->src;
         int dest = crt->dst;
+        uint32_t route_tray_size = huawei_topology
+                ? huawei_ocs_cfg.ranks_per_tray
+                : local_tray_size;
+        bool local_tray_route = route_tray_size > 0
+                                && src != dest
+                                && (src / (int)route_tray_size) == (dest / (int)route_tray_size);
 
         if (!conn_reuse and crt->msgid.has_value()) {
             cout << "msg keyword can only be used when conn_reuse is enabled.\n";
@@ -886,9 +1494,21 @@ int main(int argc, char **argv) {
         }
 
         assert(planes > 0);
-        simtime_picosec transmission_delay = (Packet::data_packet_size() * 8 / speedAsGbps(linkspeed) * topo_cfg->get_diameter() * 1000) 
-                                             + (UecBasePacket::get_ack_size() * 8 / speedAsGbps(linkspeed) * topo_cfg->get_diameter() * 1000);
-        simtime_picosec base_rtt_bw_two_points = 2*topo_cfg->get_two_point_diameter_latency(src, dest) + transmission_delay;
+        simtime_picosec base_rtt_bw_two_points = network_max_unloaded_rtt;
+        if (huawei_mode) {
+            base_rtt_bw_two_points = calculate_huawei_pair_rtt(
+                    huawei_ocs_cfg, src, dest, linkspeed, local_linkspeed, local_latency);
+        } else {
+            simtime_picosec transmission_delay = (Packet::data_packet_size() * 8 / speedAsGbps(linkspeed) * topo_cfg->get_diameter() * 1000)
+                                                 + (UecBasePacket::get_ack_size() * 8 / speedAsGbps(linkspeed) * topo_cfg->get_diameter() * 1000);
+            base_rtt_bw_two_points = 2 * topo_cfg->get_two_point_diameter_latency(src, dest) + transmission_delay;
+        }
+        if (!huawei_mode && local_tray_route) {
+            simtime_picosec local_transmission_delay =
+                (Packet::data_packet_size() * 8 / speedAsGbps(local_linkspeed) * 1000)
+                + (UecBasePacket::get_ack_size() * 8 / speedAsGbps(local_linkspeed) * 1000);
+            base_rtt_bw_two_points = 2 * local_latency + local_transmission_delay;
+        }
 
         //cout << "Connection " << crt->src << "->" <<crt->dst << " starting at " << crt->start << " size " << crt->size << endl;
 
@@ -1030,35 +1650,61 @@ int main(int argc, char **argv) {
 
             //uec_snk->set_priority(crt->priority);
                             
-            for (uint32_t p = 0; p < planes; p++) {
-                switch (route_strategy) {
-                case ECMP_FIB:
-                case ECMP_FIB_ECN:
-                case REACTIVE_ECN:
-                    {
-                        Route* srctotor = new Route();
-                        srctotor->push_back(topo[p]->queues_ns_nlp[src][topo_cfg->HOST_POD_SWITCH(src)][0]);
-                        srctotor->push_back(topo[p]->pipes_ns_nlp[src][topo_cfg->HOST_POD_SWITCH(src)][0]);
-                        srctotor->push_back(topo[p]->queues_ns_nlp[src][topo_cfg->HOST_POD_SWITCH(src)][0]->getRemoteEndpoint());
+            if (huawei_topology) {
+                if (local_tray_route) {
+                    local_flow_count++;
+                } else {
+                    huawei_ocs_flow_count++;
+                }
+                huawei_topology->connect_endpoints(
+                        src, dest, *uec_src, *uec_snk, crt->start);
+            } else if (local_tray_route) {
+                local_flow_count++;
+                Route* routeout = make_direct_local_route(src, dest, 0, uec_snk->getPort(0),
+                                                          local_linkspeed, queuesize,
+                                                          local_latency, "DATA");
+                Route* routeback = make_direct_local_route(dest, src, 0, uec_src->getPort(0),
+                                                           local_linkspeed, queuesize,
+                                                           local_latency, "ACK");
+                routeout->set_reverse(routeback);
+                routeback->set_reverse(routeout);
+                for (uint32_t p = 0; p < ports; p++) {
+                    // All UEC ports share the same local route. This keeps intra-tray
+                    // traffic on one simulated server-internal link while still giving
+                    // control packets a valid route if the NIC selects any port.
+                    uec_src->connectPort(p, *routeout, *routeback, *uec_snk, crt->start);
+                }
+            } else {
+                for (uint32_t p = 0; p < planes; p++) {
+                    switch (route_strategy) {
+                    case ECMP_FIB:
+                    case ECMP_FIB_ECN:
+                    case REACTIVE_ECN:
+                        {
+                            Route* srctotor = new Route();
+                            srctotor->push_back(topo[p]->queues_ns_nlp[src][topo_cfg->HOST_POD_SWITCH(src)][0]);
+                            srctotor->push_back(topo[p]->pipes_ns_nlp[src][topo_cfg->HOST_POD_SWITCH(src)][0]);
+                            srctotor->push_back(topo[p]->queues_ns_nlp[src][topo_cfg->HOST_POD_SWITCH(src)][0]->getRemoteEndpoint());
 
-                        Route* dsttotor = new Route();
-                        dsttotor->push_back(topo[p]->queues_ns_nlp[dest][topo_cfg->HOST_POD_SWITCH(dest)][0]);
-                        dsttotor->push_back(topo[p]->pipes_ns_nlp[dest][topo_cfg->HOST_POD_SWITCH(dest)][0]);
-                        dsttotor->push_back(topo[p]->queues_ns_nlp[dest][topo_cfg->HOST_POD_SWITCH(dest)][0]->getRemoteEndpoint());
+                            Route* dsttotor = new Route();
+                            dsttotor->push_back(topo[p]->queues_ns_nlp[dest][topo_cfg->HOST_POD_SWITCH(dest)][0]);
+                            dsttotor->push_back(topo[p]->pipes_ns_nlp[dest][topo_cfg->HOST_POD_SWITCH(dest)][0]);
+                            dsttotor->push_back(topo[p]->queues_ns_nlp[dest][topo_cfg->HOST_POD_SWITCH(dest)][0]->getRemoteEndpoint());
 
-                        uec_src->connectPort(p, *srctotor, *dsttotor, *uec_snk, crt->start);
-                        //uec_src->setPaths(path_entropy_size);
-                        //uec_snk->setPaths(path_entropy_size);
+                            uec_src->connectPort(p, *srctotor, *dsttotor, *uec_snk, crt->start);
+                            //uec_src->setPaths(path_entropy_size);
+                            //uec_snk->setPaths(path_entropy_size);
 
-                        //register src and snk to receive packets from their respective TORs. 
-                        assert(topo[p]->switches_lp[topo_cfg->HOST_POD_SWITCH(src)]);
-                        assert(topo[p]->switches_lp[topo_cfg->HOST_POD_SWITCH(src)]);
-                        topo[p]->switches_lp[topo_cfg->HOST_POD_SWITCH(src)]->addHostPort(src,uec_snk->flowId(),uec_src->getPort(p));
-                        topo[p]->switches_lp[topo_cfg->HOST_POD_SWITCH(dest)]->addHostPort(dest,uec_src->flowId(),uec_snk->getPort(p));
-                        break;
+                            //register src and snk to receive packets from their respective TORs. 
+                            assert(topo[p]->switches_lp[topo_cfg->HOST_POD_SWITCH(src)]);
+                            assert(topo[p]->switches_lp[topo_cfg->HOST_POD_SWITCH(src)]);
+                            topo[p]->switches_lp[topo_cfg->HOST_POD_SWITCH(src)]->addHostPort(src,uec_snk->flowId(),uec_src->getPort(p));
+                            topo[p]->switches_lp[topo_cfg->HOST_POD_SWITCH(dest)]->addHostPort(dest,uec_src->flowId(),uec_snk->getPort(p));
+                            break;
+                        }
+                    default:
+                        abort();
                     }
-                default:
-                    abort();
                 }
             }
 
@@ -1100,6 +1746,12 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (local_tray_size > 0) {
+        cout << "Local tray direct flows " << local_flow_count
+             << " / " << uec_srcs.size() << endl;
+    }
+
+    UecSrc::initProgressLogging(uec_srcs.size());
     Logged::dump_idmap();
     // Record the setup
     int pktsize = Packet::data_packet_size();
@@ -1167,4 +1819,3 @@ int main(int argc, char **argv) {
 
     return EXIT_SUCCESS;
 }
-

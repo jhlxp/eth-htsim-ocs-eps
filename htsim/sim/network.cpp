@@ -21,6 +21,8 @@ Packet::set_attrs(PacketFlow& flow, int pkt_size, packetid_t id){
     _is_header = 0;
     _flags = 0;
     _next_routed_hop = 0;
+    clear_ocs_ksp_route();
+    clear_ocs_source_sprayed();
 }
 
 void 
@@ -36,6 +38,8 @@ Packet::set_route(PacketFlow& flow, const Route &route, int pkt_size,
     _route = &route;
     _is_header = 0;
     _flags = 0;
+    clear_ocs_ksp_route();
+    clear_ocs_source_sprayed();
 }
 
 void 

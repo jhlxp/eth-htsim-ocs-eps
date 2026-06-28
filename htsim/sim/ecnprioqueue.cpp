@@ -65,6 +65,7 @@ ECNPrioQueue::completeService(){
     if (_ecn) {
         pkt->set_flags(pkt->flags() | ECN_CE);        
     }
+    log_packet_send(drainTime(pkt), pkt->size());
     pkt->sendOn();
 
     _serv = Q_NONE;

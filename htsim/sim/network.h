@@ -72,7 +72,7 @@ class Packet {
     
     /* empty constructor; Packet::set must always be called as
        well. It's a separate method, for convenient reuse */
-    Packet() {_is_header = false; _bounced = false; _type = IP; _flags = 0; _refcount = 0; _src = UINT32_MAX; _dst = UINT32_MAX; _pathid = UINT32_MAX; _hop_count = 0; _direction = NONE; _ingressqueue = NULL;} 
+    Packet() {_is_header = false; _bounced = false; _type = IP; _flags = 0; _refcount = 0; _src = UINT32_MAX; _dst = UINT32_MAX; _pathid = UINT32_MAX; _hop_count = 0; _direction = NONE; _ingressqueue = NULL; _has_ocs_ksp_route = false; _ocs_ksp_src_node = UINT32_MAX; _ocs_ksp_dst_group = UINT32_MAX; _ocs_ksp_path_id = UINT32_MAX; _ocs_source_sprayed = false;} 
 
     /* say "this packet is no longer wanted". (doesn't necessarily
        destroy it, so it can be reused) */
@@ -162,6 +162,26 @@ class Packet {
     inline uint32_t flags() const {return _flags;}
     inline void set_flags(uint32_t f) {_flags = f;}
 
+    inline bool has_ocs_ksp_route() const {return _has_ocs_ksp_route;}
+    inline void clear_ocs_ksp_route() {
+        _has_ocs_ksp_route = false;
+        _ocs_ksp_src_node = UINT32_MAX;
+        _ocs_ksp_dst_group = UINT32_MAX;
+        _ocs_ksp_path_id = UINT32_MAX;
+    }
+    inline void set_ocs_ksp_route(uint32_t src_node, uint32_t dst_group, uint32_t path_id) {
+        _has_ocs_ksp_route = true;
+        _ocs_ksp_src_node = src_node;
+        _ocs_ksp_dst_group = dst_group;
+        _ocs_ksp_path_id = path_id;
+    }
+    inline uint32_t ocs_ksp_src_node() const {assert(_has_ocs_ksp_route); return _ocs_ksp_src_node;}
+    inline uint32_t ocs_ksp_dst_group() const {assert(_has_ocs_ksp_route); return _ocs_ksp_dst_group;}
+    inline uint32_t ocs_ksp_path_id() const {assert(_has_ocs_ksp_route); return _ocs_ksp_path_id;}
+    inline bool ocs_source_sprayed() const {return _ocs_source_sprayed;}
+    inline void mark_ocs_source_sprayed() {_ocs_source_sprayed = true;}
+    inline void clear_ocs_source_sprayed() {_ocs_source_sprayed = false;}
+
     uint32_t nexthop() const {return _nexthop;} // only intended to be used for debugging
     virtual void set_route(const Route &route);
     virtual void set_route(const Route *route=nullptr);
@@ -195,6 +215,11 @@ class Packet {
     uint32_t _pathid;  //used for ECMP hashing.
     uint32_t _hop_count; //used for low-diameter topologies
     packet_direction _direction; //used to avoid loop in FatTrees.   
+    bool _has_ocs_ksp_route; // L2-OCS KSP explicit route metadata.
+    uint32_t _ocs_ksp_src_node;
+    uint32_t _ocs_ksp_dst_group;
+    uint32_t _ocs_ksp_path_id;
+    bool _ocs_source_sprayed; // L2-OCS SprayPoint source-spray has happened.
 
     // A packet can contain a route or a routegraph, but not both.
     // Eventually switch over entirely to RouteGraph?

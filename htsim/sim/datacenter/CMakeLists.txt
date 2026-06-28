@@ -16,6 +16,11 @@ set(LIB_SOURCES
     dragonfly_topology.cpp
     dragonfly_switch.cpp
     generic_topology.cpp
+    huawei_switch.cpp
+    huawei_topology.cpp
+    huawei_ocs_graph.cpp
+    huawei_ocs_spraypoint.cpp
+    huawei_ocs_ksp.cpp
 )
 
 # Create static library
@@ -48,6 +53,9 @@ set_property(TARGET htsim_eqds PROPERTY EXCLUDE_FROM_ALL TRUE)
 add_executable(htsim_uec main_uec.cpp)
 add_executable(htsim_uec_sf main_uec_sf.cpp)
 add_executable(htsim_uec_df main_uec_df.cpp)
+add_executable(huawei_ocs_graph_dump huawei_ocs_graph_dump.cpp)
+add_executable(huawei_ocs_spraypoint_dump huawei_ocs_spraypoint_dump.cpp)
+add_executable(huawei_ocs_ksp_dump huawei_ocs_ksp_dump.cpp)
 
 # -------------------------------
 # Linking Executables with Libraries
@@ -62,6 +70,9 @@ set (ALL_EXECUTABLES
     htsim_uec
     htsim_uec_sf
     htsim_uec_df
+    huawei_ocs_graph_dump
+    huawei_ocs_spraypoint_dump
+    huawei_ocs_ksp_dump
 )
 foreach(EXECUTABLE ${ALL_EXECUTABLES})
     # Link each executable with the 'htsim' library defined in the parent directory.
@@ -70,4 +81,3 @@ foreach(EXECUTABLE ${ALL_EXECUTABLES})
     # Add a post-build command to explicitly remove and recreate the symlink for all previous executables.
     add_symlink_target(${EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
-

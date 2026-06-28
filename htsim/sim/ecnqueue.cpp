@@ -95,6 +95,8 @@ ECNQueue::completeService()
     pkt->flow().logTraffic(*pkt, *this, TrafficLogger::PKT_DEPART);
     if (_logger) _logger->logQueue(*this, QueueLogger::PKT_SERVICE, *pkt);
 
+    log_packet_send(drainTime(pkt), pkt->size());
+
     /* tell the packet to move on to the next pipe */
     pkt->sendOn();
 

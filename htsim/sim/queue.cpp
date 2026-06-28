@@ -4,6 +4,7 @@
 #include "queue.h"
 #include "ndppacket.h"
 #include "queue_lossless.h"
+#include "link_load_sampler.h"
 
 simtime_picosec BaseQueue::_update_period = timeFromUs(0.1);
 
@@ -21,7 +22,7 @@ BaseQueue::BaseQueue(linkspeed_bps bitrate, EventList& eventlist, QueueLogger* l
 }
 
 void 
-BaseQueue::log_packet_send(simtime_picosec duration){
+BaseQueue::log_packet_send(simtime_picosec duration, mem_b bytes){
     //a packet tranmission has just finished; it lasted from a to b.
     simtime_picosec b = eventlist().now();
     simtime_picosec a = b - duration;
@@ -29,6 +30,14 @@ BaseQueue::log_packet_send(simtime_picosec duration){
     _busyend.push(b);
 
     _busy += duration;
+
+    mem_b sent_bytes = bytes;
+    if (sent_bytes <= 0 && _ps_per_byte > 0) {
+        sent_bytes = static_cast<mem_b>((duration + _ps_per_byte / 2) / _ps_per_byte);
+    }
+    if (sent_bytes > 0 && LinkLoadSampler::enabled()) {
+        LinkLoadSampler::record(this, str(), b, static_cast<uint64_t>(sent_bytes), _bitrate, queuesize());
+    }
 
     simtime_picosec y = _busyend.back();
     while (y < b - _window){
@@ -148,7 +157,7 @@ Queue::completeService()
     if (_logger) _logger->logQueue(*this, QueueLogger::PKT_SERVICE, *pkt);
 
     //used to compute queue utilization
-    log_packet_send(drainTime(pkt));
+    log_packet_send(drainTime(pkt), pkt->size());
 
     /* tell the packet to move on to the next pipe */
     pkt->sendOn();
@@ -344,6 +353,8 @@ PriorityQueue::completeService()
         pkt->flow().logTraffic(*pkt, *this, TrafficLogger::PKT_DEPART);
         if (_logger) _logger->logQueue(*this, QueueLogger::PKT_SERVICE, *pkt);
 
+        log_packet_send(drainTime(pkt), pkt->size());
+
         /* tell the packet to move on to the next pipe */
         pkt->sendOn();
     }
@@ -530,6 +541,8 @@ FairPriorityQueue::completeService()
 
         pkt->flow().logTraffic(*pkt, *this, TrafficLogger::PKT_DEPART);
         if (_logger) _logger->logQueue(*this, QueueLogger::PKT_SERVICE, *pkt);
+
+        log_packet_send(drainTime(pkt), pkt->size());
 
         /* tell the packet to move on to the next pipe */
         pkt->sendOn();

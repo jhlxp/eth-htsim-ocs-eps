@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 #include "circular_buffer.h"
 #include "data_collector.h"
 #include "uec_logger.h"
@@ -23,12 +24,84 @@ bool traceFlowCompletions() {
     return enabled;
 }
 
+struct FlowProgressState {
+    uint64_t expected_flows = 0;
+    uint8_t fastest_printed_pct = 0;
+    uint8_t slowest_printed_pct = 0;
+    uint64_t flows_at_or_above[101] = {};
+    std::unordered_map<flowid_t, uint8_t> flow_pct;
+};
+
+FlowProgressState& flowProgressState() {
+    static FlowProgressState state;
+    return state;
+}
+
+uint64_t nextSpuriousPacketCount() {
+    static uint64_t count = 0;
+    return ++count;
+}
+
 void tokenize(const std::string& str, char delim, std::vector<std::string>& out) {
     std::stringstream ss(str);
     std::string s;
     while (std::getline(ss, s, delim)) {
         out.push_back(s);
     }
+}
+
+void writeCsvRow(std::ostream& out, const std::vector<std::string>& row) {
+    for (size_t i = 0; i < row.size(); i++) {
+        out << row[i];
+        if (i + 1 < row.size()) {
+            out << ",";
+        }
+    }
+    out << std::endl;
+}
+
+void appendLiveFlowInfo(const std::vector<std::string>& columns, const std::vector<std::string>& row) {
+    static bool initialized = false;
+    static std::ofstream live_file;
+
+    if (!initialized) {
+        int ret = system("mkdir -p output_metrics");
+        if (ret != 0) {
+            std::cerr << "Failed to create output_metrics for live flow info" << std::endl;
+            initialized = true;
+            return;
+        }
+
+        live_file.open("output_metrics/flowsInfo_live.txt", std::ios::out | std::ios::trunc);
+        if (!live_file.is_open()) {
+            std::cerr << "Failed to open output_metrics/flowsInfo_live.txt" << std::endl;
+            initialized = true;
+            return;
+        }
+        writeCsvRow(live_file, columns);
+        live_file.flush();
+        initialized = true;
+    }
+
+    if (!live_file.is_open()) {
+        return;
+    }
+
+    writeCsvRow(live_file, row);
+    live_file.flush();
+}
+
+void printFastestFlowProgress(uint8_t pct, simtime_picosec now, flowid_t flow_id, mem_b bytes, mem_b flow_size) {
+    cout << timeAsUs(now) << " FastestFlowProgress " << unsigned(pct)
+         << "% flowid " << flow_id
+         << " bytes " << bytes << "/" << flow_size << endl;
+}
+
+void printSlowestFlowProgress(uint8_t pct, simtime_picosec now, uint64_t expected_flows, flowid_t flow_id, mem_b bytes, mem_b flow_size) {
+    cout << timeAsUs(now) << " SlowestFlowProgress " << unsigned(pct)
+         << "% flows " << expected_flows
+         << " flowid " << flow_id
+         << " bytes " << bytes << "/" << flow_size << endl;
 }
 }  // namespace
 
@@ -835,17 +908,71 @@ void UecSrc::handlePull(UecBasePacket::pull_quanta pullno) {
     }
 }
 
+void UecSrc::initProgressLogging(uint64_t expected_flows) {
+    FlowProgressState& state = flowProgressState();
+    state = FlowProgressState();
+    state.expected_flows = expected_flows;
+    state.flow_pct.reserve(expected_flows);
+    cout << "Flow progress logging enabled for " << expected_flows << " flows" << endl;
+}
+
+void UecSrc::logProgressFromAck() {
+    FlowProgressState& state = flowProgressState();
+    if (state.expected_flows == 0 || _flow_size == 0) {
+        return;
+    }
+
+    mem_b received = _recvd_bytes;
+    if (received > _flow_size) {
+        received = _flow_size;
+    }
+    uint8_t pct = static_cast<uint8_t>((received * 100) / _flow_size);
+    if (pct == 0) {
+        return;
+    }
+
+    flowid_t flow_id = flowId();
+    uint8_t old_pct = 0;
+    auto it = state.flow_pct.find(flow_id);
+    if (it != state.flow_pct.end()) {
+        old_pct = it->second;
+    }
+    if (pct <= old_pct) {
+        return;
+    }
+    state.flow_pct[flow_id] = pct;
+
+    simtime_picosec now = eventlist().now();
+    for (uint8_t p = old_pct + 1; p <= pct; p++) {
+        state.flows_at_or_above[p]++;
+        if (p > state.fastest_printed_pct) {
+            while (state.fastest_printed_pct < p) {
+                state.fastest_printed_pct++;
+                printFastestFlowProgress(state.fastest_printed_pct, now, flow_id, received, _flow_size);
+            }
+        }
+    }
+
+    while (state.slowest_printed_pct < 100 &&
+           state.flows_at_or_above[state.slowest_printed_pct + 1] >= state.expected_flows) {
+        state.slowest_printed_pct++;
+        printSlowestFlowProgress(state.slowest_printed_pct, now, state.expected_flows, flow_id, received, _flow_size);
+    }
+}
+
 void UecSrc::logFlowCompletionMetric() {
     htsim::DataCollector& data_collector = htsim::DataCollector::get_instance();
+    std::vector<std::string> columns = {
+        "srcNode_dstNode_flowId", "flowSizeBytes", "startTimeNs", "endTimeNs",
+        "fctNs", "baseRttNs", "targetRttNs", "rtoNs", "bdpBytes",
+        "maxCwndBytes", "oooCount", "oooAvgDistance", "oooMaxDistance",
+        "totalPackets"};
     htsim::CsvMetric* flow_metric = data_collector.RegisterCsvMetric(
-        "flowsInfo", {"srcNode_dstNode_flowId", "flowSizeBytes", "startTimeNs", "endTimeNs",
-                      "fctNs", "baseRttNs", "targetRttNs", "rtoNs", "bdpBytes",
-                      "maxCwndBytes", "oooCount", "oooAvgDistance", "oooMaxDistance",
-                      "totalPackets"});
+        "flowsInfo", columns);
 
     simtime_picosec now = eventlist().now();
     const uint64_t total_packets = _mss ? (_flow_size + _mss - 1) / _mss : 0;
-    flow_metric->LogData({
+    std::vector<std::string> row = {
         std::to_string(_srcaddr) + "_" + std::to_string(_dstaddr) + "_" +
             std::to_string(flowId()),
         std::to_string(_flow_size),
@@ -861,7 +988,9 @@ void UecSrc::logFlowCompletionMetric() {
         std::to_string(_sink ? _sink->oooAvgDistance() : 0.0),
         std::to_string(_sink ? _sink->oooMaxDistance() : 0),
         std::to_string(total_packets),
-    });
+    };
+    flow_metric->LogData(row);
+    appendLiveFlowInfo(columns, row);
 }
 
 bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
@@ -1004,6 +1133,7 @@ void UecSrc::processAck(const UecAckPacket& pkt) {
         cout << "processAck " << cum_ack << " ref_epsn " << pkt.acked_psn() << " recvd_bytes " << _recvd_bytes << " newly_recvd_bytes " << newly_recvd_bytes << endl;
     }
     _stats.acks_received++;
+    logProgressFromAck();
 
     //decrease flightsize.
     _in_flight -= newly_recvd_bytes;
@@ -2478,6 +2608,9 @@ void UecSrc::rtxTimerExpired() {
 
     // there's no queue, so maybe we could just resend now?
     queueForRtx(seqno, pkt_size);
+    if (_rtx_queue.empty() || _send_blocked_on_nic) {
+        return;
+    }
 
     if (_sender_based_cc) {
         if (_cwnd < pkt_size + _in_flight) {
@@ -2795,10 +2928,12 @@ void UecSink::processData(UecDataPacket& pkt) {
         _stats.duplicates++;
         _nic.logReceivedData(pkt.size(), 0);
 
-        // if (_src->flow()->flow_id() == UecSrc::_debug_flowid){   
-            cout << timeAsUs(_src->eventlist().now()) << " flowid " << _src->flow()->flow_id()  
-                << " Spurious " << pkt.epsn() <<endl;
-        // }
+        uint64_t spurious_count = nextSpuriousPacketCount();
+        if (spurious_count % 10000 == 0) {
+            cout << timeAsUs(_src->eventlist().now()) << " SpuriousTotal " << spurious_count
+                 << " flowid " << _src->flow()->flow_id()
+                 << " epsn " << pkt.epsn() << endl;
+        }
         // sender is confused and sending us duplicates: ACK straight away.
         // this code is different from the proposed hardware implementation, as it keeps track of
         // the ACK state of OOO packets.

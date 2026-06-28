@@ -79,6 +79,7 @@ set(SOURCE_FILES
     hpccpacket.cpp
     logfile.cpp
     loggers.cpp
+    link_load_sampler.cpp
     metric.cpp
     data_collector.cpp
     meter.cpp

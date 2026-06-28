@@ -137,6 +137,7 @@ void CompositeQueue::completeService(){
     }
     
     pkt->flow().logTraffic(*pkt,*this,TrafficLogger::PKT_DEPART);
+    log_packet_send(drainTime(pkt), pkt->size());
     pkt->sendOn();
 
     //_virtual_time += drainTime(pkt);

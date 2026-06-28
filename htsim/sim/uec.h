@@ -140,6 +140,7 @@ public:
     static void initNsccParams(simtime_picosec network_rtt, linkspeed_bps linkspeed, 
                                simtime_picosec target_Qdelay, int8_t qa_gate,
                                bool trimming_enabled);
+    static void initProgressLogging(uint64_t expected_flows);
     /**
      * Initialize per-connection NSCC parameters.
      */
@@ -319,6 +320,7 @@ public:
     void (UecSrc::*updateCwndOnAck)(bool skip, simtime_picosec delay, mem_b newly_acked_bytes);
     void (UecSrc::*updateCwndOnNack)(bool skip, mem_b nacked_bytes, bool last_hop);
 
+    void logProgressFromAck();
     bool checkFinished(UecDataPacket::seq_t cum_ack);
 
     Stats _stats;

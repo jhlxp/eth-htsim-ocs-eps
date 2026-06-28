@@ -152,7 +152,7 @@ void LosslessOutputQueue::completeService(){
     q->completedService(*pkt);
 
     //this is used for bandwidth utilization tracking. 
-    log_packet_send(drainTime(pkt));
+    log_packet_send(drainTime(pkt), pkt->size());
 
     //if (((uint64_t)timeAsUs(eventlist().now()))%5==0)
     //    cout << "Queue bandwidth utilization " << average_utilization() << "%" << endl;

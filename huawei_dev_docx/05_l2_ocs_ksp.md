@@ -1,6 +1,6 @@
 # L2 OCS KSP Routing
 
-KSP is the complete-path routing mode for cross-group Huawei L2 OCS traffic. It runs on the same coupled logical OCS graph described in `02_l2_ocs_design.md`.
+KSP is the complete-path routing mode for cross-group Huawei L2 OCS traffic. It runs on the same coupled logical OCS graph described in `03_l2_ocs_graph.md`.
 
 Implementation files:
 

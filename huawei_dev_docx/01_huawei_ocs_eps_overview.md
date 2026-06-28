@@ -262,8 +262,9 @@ HUAWEI_OCS_MODE=spraypoint HUAWEI_OCS_CHOICE=packet_rr SPRAY_P=4 SPRAY_H=2 \
 
 ## Document Map
 
-- `02_l2_ocs_design.md`: OCS coupled graph and `M/N` formulas.
-- `03_l2_ocs_spraypoint_design.md`: SprayPoint forwarding state and parameters.
-- `04_l2_ocs_ksp_design.md`: KSP path table, packet metadata, and selection.
-- `05_8192_cluster_topology.md`: 8192-rank cluster parameter table.
-- `06_switch_local_data_plane.md`: Switch-local data-plane behavior and validation notes.
+- `01_huawei_ocs_eps_overview.md`: Entry point and source layout.
+- `02_switch_local_data_plane.md`: Switch-local forwarding and packet metadata.
+- `03_l2_ocs_graph.md`: OCS coupled graph and `M/N` formulas.
+- `04_l2_ocs_spraypoint.md`: SprayPoint forwarding state and parameters.
+- `05_l2_ocs_ksp.md`: KSP path table, packet metadata, and selection.
+- `06_8192_cluster_topology.md`: 8192-rank cluster parameter table.

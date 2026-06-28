@@ -1,6 +1,6 @@
 # L2 OCS SprayPoint Routing
 
-SprayPoint is one of the cross-group L2 OCS routing modes in the Huawei topology. It runs on the coupled logical OCS graph described in `02_l2_ocs_design.md`.
+SprayPoint is one of the cross-group L2 OCS routing modes in the Huawei topology. It runs on the coupled logical OCS graph described in `03_l2_ocs_graph.md`.
 
 Implementation files:
 

@@ -1,19 +1,19 @@
-# L2 OCS Graph Model
+# L2 OCS Graph 模型
 
-This document describes the L2 OCS graph used by the Huawei topology implementation.
+这份文档说明 Huawei 拓扑中的 L2 OCS graph。
 
-The simulator builds the OCS fabric as a graph over coupled L1 EPS logical nodes. Each graph edge represents one OCS circuit between two cross-group logical nodes.
+仿真器把 OCS fabric 建模为 coupled L1 EPS logical node 之间的图。图中的每条边表示两个跨 group logical node 之间的一条 OCS circuit。
 
-## Corrected L1 EPS Formula
+## L1 EPS 公式
 
-The 8192-rank Huawei cluster uses two symbolic parameters:
+8192-rank Huawei 集群使用两个符号参数：
 
 ```text
-N = number of L0 domains per group
-M = number of external L0/L1 planes per rank
+N = 每个 group 中的 L0 domain 数
+M = 每个 rank 的外部 L0/L1 plane 数
 ```
 
-The total rank count does not change with `M` or `N`:
+`M` 和 `N` 不改变总 rank 数：
 
 ```text
 groups = 128 / N
@@ -21,7 +21,7 @@ ranks_per_group = 64N
 total_ranks = (128 / N) * 64N = 8192
 ```
 
-The L1 EPS count is:
+L1 EPS 总数为：
 
 ```text
 l1_eps_total = groups * M * 4
@@ -29,7 +29,7 @@ l1_eps_total = groups * M * 4
              = 512M / N
 ```
 
-The OCS-related formulas used by the implementation are:
+OCS 相关公式：
 
 ```text
 physical_ocs_switches = 8N
@@ -37,50 +37,50 @@ ocs_ports_per_switch = 512M / N
 l1_uplinks_per_eps = 8N
 ```
 
-Port accounting closes:
+端口账能对齐：
 
 ```text
 L1 uplink ports = (512M/N) * (8N) = 4096M
 OCS ports       = (8N) * (512M/N) = 4096M
 ```
 
-## Coupled Logical Nodes
+## Coupled Logical Node
 
-L1 EPS are coupled in pairs before entering the OCS graph:
+L1 EPS 进入 OCS graph 前先按相邻同 plane EPS 合口：
 
 ```text
 EPS0 + EPS1 -> coupled_pair 0
 EPS2 + EPS3 -> coupled_pair 1
 ```
 
-For each group and each L1 plane:
+每个 group、每个 L1 plane：
 
 ```text
 l1_eps_per_l1_plane = 4
 coupled_pairs_per_plane = 2
 ```
 
-The OCS routing graph uses logical nodes:
+OCS routing graph 的节点为：
 
 ```text
 logical_node = (group, l1_plane, coupled_pair)
 ```
 
-Node counts:
+节点数：
 
 ```text
 logical_nodes_total = l1_eps_total / 2 = 256M / N
 logical_nodes_per_group = 2M
 ```
 
-The source files implement this mapping in:
+实现文件：
 
 ```text
 htsim/sim/datacenter/huawei_ocs_graph.h
 htsim/sim/datacenter/huawei_ocs_graph.cpp
 ```
 
-Key helpers:
+关键 helper：
 
 ```cpp
 huawei_ocs_coupled_endpoint_id(...)
@@ -90,57 +90,57 @@ huawei_ocs_decode_coupled_logical_node(...)
 huawei_ocs_coupled_logical_nodes_per_group(...)
 ```
 
-## Cross-Group Degree
+## 跨 Group Degree
 
-OCS links do not connect logical nodes in the same group. Same-group traffic uses the electrical L0/L1 fabric.
+OCS 不连接同 group 内的 logical node。同 group 流量走 L0/L1 electrical fabric。
 
-Let:
+定义：
 
 ```text
-Q = 256M / N      # total logical nodes
-S = 2M            # logical nodes per group
-K = 8N            # physical OCS rounds/switches
+Q = 256M / N      # logical node 总数
+S = 2M            # 每个 group 的 logical node 数
+K = 8N            # 物理 OCS round/switch 数
 ```
 
-The maximum useful cross-group degree is:
+最大有效跨 group degree：
 
 ```text
 D_cross = Q - S = 256M/N - 2M
 ```
 
-The simulator uses:
+仿真器使用：
 
 ```text
 ocs_degree = min(8N, 256M/N - 2M)
 ```
 
-When:
+当：
 
 ```text
 ocs_degree == D_cross
 ```
 
-the graph is cross-group complete. Otherwise it is a sparse regular expander.
+OCS graph 是 cross-group complete。否则是 sparse regular expander。
 
-## Full-Connectivity Checks
+## 全连接条件
 
-All-node full mesh condition:
+全节点 full mesh 条件：
 
 ```text
 8N >= 256M/N - 1
 ```
 
-Cross-group full mesh condition:
+跨 group full mesh 条件：
 
 ```text
 8N >= 256M/N - 2M
 ```
 
-The implementation uses the cross-group condition because intra-group OCS edges are intentionally skipped.
+实现采用跨 group 条件，因为组内 OCS edge 会被跳过。
 
-## Graph Construction
+## Graph 构造
 
-The graph builder is:
+graph builder：
 
 ```cpp
 build_huawei_ocs_coupled_template(
@@ -151,16 +151,16 @@ build_huawei_ocs_coupled_template(
     ocs_seed)
 ```
 
-Properties:
+构造性质：
 
-- nodes are `logical_node(group, l1_plane, coupled_pair)`;
-- every edge connects two different groups;
-- each node has exactly `degree` neighbors;
-- each OCS round is a matching over logical nodes;
-- the graph is deterministic for a fixed seed;
-- the builder validates degree, parity, connectivity, and no intra-group edges.
+- 节点为 `logical_node(group, l1_plane, coupled_pair)`；
+- 每条边连接两个不同 group；
+- 每个节点 degree 等于 `degree`；
+- 每个 OCS round 是 logical node 上的一个 matching；
+- 固定 seed 下结果确定；
+- builder 会检查 degree、奇偶性、连通性和无组内边。
 
-The generated graph is stored as:
+生成的 graph 保存为：
 
 ```cpp
 struct HuaweiOcsGraph {
@@ -173,11 +173,11 @@ struct HuaweiOcsGraph {
 };
 ```
 
-`edge_ocs[i]` records which OCS round produced `edges[i]`.
+`edge_ocs[i]` 表示 `edges[i]` 来自哪个 OCS round。
 
-## Example: N=8, M=4
+## 示例：N=8, M=4
 
-Current experiments use `N=8, M=4`:
+当前实验使用 `N=8, M=4`：
 
 ```text
 groups = 16
@@ -190,18 +190,18 @@ cross_group_full_degree = 128 - 8 = 120
 ocs_degree = min(64, 120) = 64
 ```
 
-So the current OCS graph is sparse, degree-64, and cross-group regular. It is not cross-group complete.
+因此当前 OCS graph 是 degree-64 的 sparse cross-group regular graph，不是 cross-group complete。
 
-## Graph Dump
+## Graph Dump 工具
 
-Build the dump binary:
+编译 dump 工具：
 
 ```bash
 cd /home/chen/workplace/infra/HTSIM
 cmake --build htsim/sim/build --target huawei_ocs_graph_dump -j 8
 ```
 
-Inspect the current N=8,M=4 graph:
+查看当前 N=8,M=4 graph：
 
 ```bash
 ./htsim/sim/datacenter/huawei_ocs_graph_dump \
@@ -213,7 +213,7 @@ Inspect the current N=8,M=4 graph:
   --ocs_expander_seed 42
 ```
 
-The functional test validates the same properties automatically:
+功能测试会自动检查同样的 graph 性质：
 
 ```bash
 cd /home/chen/workplace/infra

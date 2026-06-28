@@ -1,37 +1,37 @@
 # Switch-Local Huawei Data Plane
 
-This document describes the implemented Huawei switch-local data plane.
+这份文档说明 Huawei 拓扑当前实现的数据面逻辑。
 
-The key rule is:
+核心规则：
 
 ```text
-source routes only reach the first L0 switch;
-all later hops are selected by HuaweiSwitch local FIBs or by the L1 OCS resolver.
+源端 route 只到第一跳 L0；
+后续每一跳由 HuaweiSwitch 本地 FIB 或 L1 OCS resolver 决定。
 ```
 
-No full end-to-end path list is generated for Huawei topology.
+Huawei 拓扑不会生成完整的端到端 path list。
 
-## Data-Plane Objects
+## 数据面对象
 
-Topology:
+拓扑对象：
 
 ```cpp
 HuaweiTopology
 ```
 
-Switch:
+交换机对象：
 
 ```cpp
 HuaweiSwitch
 ```
 
-OCS special resolver:
+OCS 特殊下一跳 resolver：
 
 ```cpp
 HuaweiTopology::l1_special_next_hop(...)
 ```
 
-UEC connection setup:
+UEC 建连入口：
 
 ```cpp
 HuaweiTopology::connect_endpoints(src, dst, uec_src, uec_snk, start_time)
@@ -39,15 +39,15 @@ HuaweiTopology::connect_endpoints(src, dst, uec_src, uec_snk, start_time)
 
 ## Route Setup
 
-For same-tray traffic:
+同 tray 流量：
 
 ```text
 rank_src -> local direct 800G link -> rank_dst
 ```
 
-The same local route is attached to all UEC ports, but it does not enter L0/L1/OCS.
+本地直连 route 会挂到所有 UEC port 上，但不会进入 L0/L1/OCS。
 
-For external traffic, each UEC port maps to one plane:
+外部网络流量中，每个 UEC port 映射到一个 plane：
 
 ```text
 port p:
@@ -55,104 +55,104 @@ port p:
   reverse route = rank_dst -> L0(dst,p)
 ```
 
-The first route fragment ends at an L0 switch. Later hops are selected by switch-local forwarding.
+第一段 route fragment 到 L0 结束。之后由 switch-local forwarding 接管。
 
 ## L0 FIB
 
-For each active destination, source-side L0 switches install up-routes:
+对每个 active destination，源侧 L0 switch 安装上行 FIB：
 
 ```text
-L0(src, plane p) -> all L1 EPS in src_group and plane p
+L0(src, plane p) -> src_group 内同 plane 的所有 L1 EPS
 ```
 
-Candidate count:
+候选数：
 
 ```text
 l1_eps_per_l1_plane
 ```
 
-With the current experiment:
+当前实验中：
 
 ```text
 l1_eps_per_l1_plane = 4
 ```
 
-When `-strat ecmp_rr` is used, data packets are round-robined across those candidates.
+使用 `-strat ecmp_rr` 时，data packet 会在这些 L1 EPS 候选之间逐包 RR。
 
-## L1 Group-Local FIB
+## L1 组内 FIB
 
-For every destination rank, the destination group L1 switches install down-routes:
+对每个 destination rank，目的 group 的 L1 switch 安装下行 FIB：
 
 ```text
 L1(dst_group, plane p, eps e) -> L0(dst,p)
 ```
 
-If a packet arrives at any L1 switch in the destination group, the OCS resolver returns `nullptr`, and normal FIB lookup routes down toward the destination L0 and rank.
+如果 packet 到达任意目的 group 内的 L1 switch，OCS resolver 返回 `nullptr`，随后普通 FIB lookup 会把 packet 下送到目的 L0 和 rank。
 
-## L1 Cross-Group OCS Resolver
+## L1 跨组 OCS Resolver
 
-If an L1 switch sees:
+当 L1 switch 看到：
 
 ```text
 current_group != dst_group
 ```
 
-it calls the OCS resolver:
+它会调用：
 
 ```cpp
 HuaweiTopology::l1_special_next_hop(...)
 ```
 
-The resolver maps the physical L1 EPS into a coupled logical node:
+resolver 先把物理 L1 EPS 映射到 coupled logical node：
 
 ```text
 current_node = logical_node(group, l1_plane, coupled_pair)
 ```
 
-Then it chooses one OCS next logical node using the configured mode:
+再根据配置选择 OCS 下一跳：
 
 ```text
 spraypoint
 ksp
 ```
 
-The selected logical node is mapped back to a physical L1 EPS while preserving the coupled member:
+选出的 logical node 会映射回物理 L1 EPS，并保持当前 coupled member：
 
 ```text
 next_l1 = l1_from_logical_node(next_node, current_member)
 ```
 
-The physical link is:
+物理链路为：
 
 ```text
 L1(current) -> L1(next)
 ```
 
-It is recorded as layer:
+link-load sampler 中记录为：
 
 ```text
 huawei_l1_ocs
 ```
 
-## HuaweiSwitch Strategy
+## HuaweiSwitch 策略
 
-`HuaweiSwitch` mirrors the useful local behavior of `FatTreeSwitch` without using fat-tree pod/tier formulas.
+`HuaweiSwitch` 复用了 fat-tree switch 中对本地下一跳选择有用的语义，但不依赖 fat-tree 的 pod/tier 公式。
 
-Supported strategies:
+支持：
 
 ```text
 ECMP
 RR
 ```
 
-Mapping from CLI:
+CLI 映射：
 
 ```text
 -strat ecmp_host -> HuaweiSwitch::ECMP
 -strat ecmp_rr   -> HuaweiSwitch::RR
 ```
 
-Selection rules:
+选择规则：
 
 ```text
 ECMP:
@@ -165,13 +165,13 @@ RR:
       switch-local packet round-robin
 ```
 
-OCS `packet_rr` uses a separate `HuaweiSwitch::next_special_rr()` counter so OCS packet spray is independent of UEC path entropy.
+OCS `packet_rr` 使用独立的 `HuaweiSwitch::next_special_rr()` counter，因此 OCS packet spray 不依赖 UEC path entropy。
 
 ## Packet Metadata
 
-Huawei OCS adds two pieces of packet state.
+Huawei OCS 在 `Packet` 中增加两类状态。
 
-SprayPoint:
+SprayPoint：
 
 ```cpp
 bool ocs_source_sprayed() const;
@@ -179,9 +179,9 @@ void mark_ocs_source_sprayed();
 void clear_ocs_source_sprayed();
 ```
 
-This enforces source-only spray.
+它用于保证 source spray 只发生一次。
 
-KSP:
+KSP：
 
 ```cpp
 bool has_ocs_ksp_route() const;
@@ -189,13 +189,13 @@ void set_ocs_ksp_route(src_node, dst_group, path_id);
 void clear_ocs_ksp_route();
 ```
 
-This lets intermediate L1 switches continue along the same complete KSP path.
+它让中间 L1 EPS 能继续沿着源侧选择的完整 KSP path 转发。
 
-Both metadata groups are cleared when a packet is reinitialized.
+两类 metadata 都会在 packet 重新初始化时清除。
 
-## Link Names and Layers
+## Link 名称与层级
 
-The topology creates named queue/pipe links. The link-load sampler parses those names into layers:
+拓扑会创建带名称的 queue/pipe link。link-load sampler 根据名称解析层级：
 
 ```text
 LOCAL_SRCx->DSTy        -> huawei_local_direct
@@ -206,7 +206,7 @@ L1_j->L0_i              -> huawei_l0_l1 down
 L1_i->L1_j              -> huawei_l1_ocs cross
 ```
 
-Sample output:
+采样输出：
 
 ```text
 output_metrics/link_info.csv
@@ -217,7 +217,7 @@ output_metrics/link_load_by_layer.png
 
 ## Runtime Logging
 
-Huawei mode prints structured configuration blocks:
+Huawei mode 会打印结构化配置块：
 
 ```text
 #----------- HUAWEI TOPOLOGY begin ------------
@@ -233,7 +233,7 @@ Huawei mode prints structured configuration blocks:
 #----------- HUAWEI OUTPUT END ------------
 ```
 
-These blocks include input parameters and derived statistics such as:
+这些块包含输入参数和派生统计，例如：
 
 ```text
 groups
@@ -249,46 +249,46 @@ ocs_full_cross_group_degree
 ocs_cross_group_complete
 ```
 
-## Validation
+## 功能验证
 
-Smoke test:
+基础 smoke test：
 
 ```bash
 cd /home/chen/workplace/infra
 ./HTSIM/tests/functional/run_huawei_switch_local_smoke.sh
 ```
 
-This validates:
+验证内容：
 
-- same-tray direct 800G route;
-- same-group L0/L1 switch-local forwarding;
-- cross-group KSP packet RR;
-- cross-group KSP flow hash;
-- cross-group SprayPoint packet RR.
+- 同 tray 800G direct route；
+- 同 group L0/L1 switch-local 转发；
+- 跨 group KSP packet RR；
+- 跨 group KSP flow hash；
+- 跨 group SprayPoint packet RR。
 
-OCS dataplane test:
+OCS dataplane test：
 
 ```bash
 ./HTSIM/tests/functional/run_huawei_ocs_dataplane_tests.sh
 ```
 
-M=4,N=8 feature test:
+M=4,N=8 feature test：
 
 ```bash
 ./HTSIM/tests/functional/run_ocs_m4n8_feature_tests.sh
 ```
 
-This validates:
+验证内容：
 
-- OCS graph degree and no intra-group edges;
-- SprayPoint state and candidate behavior;
-- KSP paths for K=2/4/8/16;
-- local direct, same-group, cross-group, packet-RR, and flow-hash cases;
-- a 256-rank random all-to-all sample embedded in the 8192-rank topology.
+- OCS graph degree 和无组内边；
+- SprayPoint 状态和 candidate 行为；
+- KSP 的 K=2/4/8/16 path；
+- local direct、same-group、cross-group、packet-RR、flow-hash case；
+- 8192-rank 拓扑中嵌入 256-rank random all-to-all sample。
 
-## Reading Results
+## 结果阅读
 
-For EP256 empirical experiments, the most useful files are:
+EP256 empirical 实验中最常看的文件：
 
 ```text
 run_config.txt
@@ -298,8 +298,8 @@ output_metrics/link_load_summary.csv
 output_metrics/link_load_by_layer.png
 ```
 
-Typical interpretation:
+典型判断方式：
 
-- Uniform `huawei_host_l0 up` and `huawei_l0_l1 up` indicate source spray and L0 RR are working.
-- `huawei_l1_ocs cross` shows cross-group OCS balance.
-- `huawei_host_l0 down` and `huawei_l0_l1 down` can remain skewed because expert hotness creates receiver-side incast.
+- `huawei_host_l0 up` 和 `huawei_l0_l1 up` 越均匀，说明 source spray 和 L0 RR 越正常。
+- `huawei_l1_ocs cross` 反映跨 group OCS 的负载均衡情况。
+- `huawei_host_l0 down` 和 `huawei_l0_l1 down` 可能仍然倾斜，因为 expert hotness 会导致 receiver-side incast。

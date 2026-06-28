@@ -1,8 +1,8 @@
-# L2 OCS KSP Routing
+# L2 OCS KSP 路由
 
-KSP is the complete-path routing mode for cross-group Huawei L2 OCS traffic. It runs on the same coupled logical OCS graph described in `03_l2_ocs_graph.md`.
+`KSP` 是 Huawei L2 OCS 跨 group 流量的完整路径路由模式。它运行在 `03_l2_ocs_graph.md` 描述的 coupled logical OCS graph 上。
 
-Implementation files:
+实现文件：
 
 ```text
 htsim/sim/datacenter/huawei_ocs_ksp.h
@@ -10,23 +10,23 @@ htsim/sim/datacenter/huawei_ocs_ksp.cpp
 htsim/sim/datacenter/huawei_ocs_ksp_dump.cpp
 ```
 
-## Routing Scope
+## 路由范围
 
-KSP is used only when an L1 EPS sees cross-group traffic:
+当 L1 EPS 看到跨 group 流量时，才使用 KSP：
 
 ```text
 current_group != dst_group
 ```
 
-The path target is the destination group:
+路径目标是目的 group：
 
 ```text
 dst_set = all logical_node(dst_group, *, *)
 ```
 
-Any logical node in `dst_group` can terminate the OCS segment. Group-local L1/L0 FIB entries then deliver the packet to the destination rank.
+路径到达 `dst_group` 中任意 logical node 后，OCS segment 结束。之后由 group-local L1/L0 FIB 送到目的 rank。
 
-## Parameters
+## 参数
 
 ```text
 -huawei_ocs_mode ksp
@@ -37,15 +37,15 @@ Any logical node in `dst_group` can terminate the OCS segment. Group-local L1/L0
 -huawei_ksp_max_paths_per_pair <limit>
 ```
 
-Meaning:
+含义：
 
-- `huawei_ksp_k`: number of candidate paths per `(src_logical_node, dst_group)`.
-- `huawei_ksp_max_hops`: maximum OCS hops; `auto` means no explicit small cap.
-- `huawei_ksp_seed`: deterministic tie-break seed.
-- `huawei_ksp_max_paths_per_pair`: guardrail for path generation.
-- `huawei_ocs_choice`: runtime path selection policy.
+- `huawei_ksp_k`: 每个 `(src_logical_node, dst_group)` 保留的候选 path 数量。
+- `huawei_ksp_max_hops`: 最大 OCS hop 数；`auto` 表示不设置较小的显式上限。
+- `huawei_ksp_seed`: 确定性 tie-break seed。
+- `huawei_ksp_max_paths_per_pair`: path generation 的保护上限。
+- `huawei_ocs_choice`: 运行时 path 选择策略。
 
-Default experiment values:
+默认实验值：
 
 ```text
 ksp_k = 8
@@ -56,7 +56,7 @@ huawei_ocs_choice = packet_rr
 
 ## Path Table
 
-The router precomputes:
+router 会预计算：
 
 ```text
 paths[src_logical_node][dst_group] = [
@@ -65,20 +65,20 @@ paths[src_logical_node][dst_group] = [
 ]
 ```
 
-Each stored path:
+每条 path 满足：
 
-- starts at the source logical node;
-- ends at any logical node in `dst_group`;
-- is simple;
-- is sorted by hop count with deterministic tie-breaking.
+- 从 source logical node 开始；
+- 在 `dst_group` 的任意 logical node 结束；
+- 是 simple path；
+- 按 hop count 排序，并使用确定性 tie-break。
 
-The source class is:
+实现类：
 
 ```cpp
 class HuaweiOcsKspRouter
 ```
 
-Main APIs:
+主要 API：
 
 ```cpp
 const vector<HuaweiOcsKspPath>& paths(uint32_t src_node, uint32_t dst_group) const;
@@ -86,29 +86,29 @@ uint32_t choose_path(...);
 uint32_t next_hop(src_node, dst_group, path_id, current_node) const;
 ```
 
-## Path Generation
+## Path 生成
 
-The implementation uses a Yen-style K shortest simple path search over a multi-target destination set.
+实现使用 Yen-style K shortest simple path search，目标是一个 destination group node set。
 
-High-level flow:
+流程：
 
 ```text
-1. Find the first BFS shortest path from src_node to any node in dst_group.
-2. Add it to accepted paths.
-3. Generate spur candidates by deviating from accepted paths.
-4. Ban edges that recreate an already accepted prefix.
-5. Ban root-prefix nodes to keep paths simple.
-6. Add the best candidate by length and deterministic tie-break.
-7. Stop at K paths or when no candidates remain.
+1. 用 BFS 找 src_node 到 dst_group 任意 node 的第一条 shortest path。
+2. 加入 accepted paths。
+3. 对已接受 path 的各个 spur 位置生成偏离候选。
+4. 禁止重建已接受 path 的相同 prefix edge。
+5. 禁止 root-prefix node，保证 path simple。
+6. 按长度和确定性 tie-break 选择最优候选。
+7. 达到 K 条或无候选后停止。
 ```
 
-This avoids enumerating all possible paths in the expander graph.
+这种方式避免在 expander graph 上枚举所有可能 path。
 
 ## Packet Metadata
 
-KSP needs packet metadata because the source selects a complete path and intermediate L1 EPS must continue along that exact path.
+KSP 需要 packet metadata，因为源侧选择的是完整 OCS path，中间 L1 EPS 必须沿着这条 path 继续转发。
 
-The packet stores:
+packet 保存：
 
 ```cpp
 bool has_ocs_ksp_route() const;
@@ -120,11 +120,11 @@ uint32_t ocs_ksp_dst_group() const;
 uint32_t ocs_ksp_path_id() const;
 ```
 
-The metadata is cleared when a packet is reinitialized and when the packet reaches the destination group.
+packet 重新初始化时会清除 metadata；packet 到达目的 group 时也会清除 metadata。
 
-## Runtime Forwarding
+## 运行时转发
 
-Source L1 EPS:
+源 L1 EPS：
 
 ```text
 src_node = current logical node
@@ -134,7 +134,7 @@ pkt.set_ocs_ksp_route(src_node, dst_group, path_id)
 next = next_hop(src_node, dst_group, path_id, current_node)
 ```
 
-Middle L1 EPS:
+中间 L1 EPS：
 
 ```text
 src_node = pkt.ocs_ksp_src_node()
@@ -144,7 +144,7 @@ current_node = current logical node
 next = next_hop(src_node, dst_group, path_id, current_node)
 ```
 
-Destination group:
+目的 group：
 
 ```text
 pkt.clear_ocs_ksp_route()
@@ -152,9 +152,9 @@ return nullptr from OCS resolver
 HuaweiSwitch continues with normal downlink FIB
 ```
 
-## Path Selection
+## Path 选择
 
-`-huawei_ocs_choice` controls how one of the K candidate paths is selected:
+`-huawei_ocs_choice` 控制从 K 条候选 path 中选哪一条：
 
 ```text
 packet_rr:
@@ -164,17 +164,17 @@ flow_hash:
   stable hash over flow_id/pathid/src/dst_group
 ```
 
-`packet_rr` is useful for stress-testing packet-level path spreading. `flow_hash` is closer to conventional ECMP/KSP flow placement.
+`packet_rr` 用于压测 packet-level path spreading。`flow_hash` 更接近传统 ECMP/KSP 的 flow placement。
 
-## Data-Plane Integration
+## Data-Plane 集成
 
-The integration point is:
+集成入口：
 
 ```cpp
 HuaweiTopology::l1_special_next_hop(HuaweiSwitch* sw, Packet& pkt)
 ```
 
-For KSP:
+KSP 调用：
 
 ```cpp
 if (!pkt.has_ocs_ksp_route()) {
@@ -185,22 +185,22 @@ if (!pkt.has_ocs_ksp_route()) {
 next_node = _ksp->next_hop(src_node, dst_group, path_id, current_node);
 ```
 
-The next logical node is mapped to a physical L1 EPS by preserving the coupled member:
+logical next node 会映射回物理 L1 EPS，并保持当前 coupled member：
 
 ```cpp
 next_l1 = l1_from_logical_node(next_node, current_member)
 ```
 
-## Inspect KSP Paths
+## 检查 KSP Paths
 
-Build:
+编译：
 
 ```bash
 cd /home/chen/workplace/infra/HTSIM
 cmake --build htsim/sim/build --target huawei_ocs_ksp_dump -j 8
 ```
 
-Inspect N=8,M=4 with K=8:
+查看 N=8,M=4、K=8：
 
 ```bash
 ./htsim/sim/datacenter/huawei_ocs_ksp_dump \
@@ -215,14 +215,14 @@ Inspect N=8,M=4 with K=8:
   --ksp-seed 42
 ```
 
-Run the functional test:
+运行功能测试：
 
 ```bash
 cd /home/chen/workplace/infra
 ./HTSIM/tests/functional/run_ocs_m4n8_feature_tests.sh
 ```
 
-Run the EP256 experiment with KSP:
+运行 EP256 KSP 实验：
 
 ```bash
 cd /home/chen/workplace/infra

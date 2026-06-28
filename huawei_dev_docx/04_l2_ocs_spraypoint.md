@@ -1,8 +1,8 @@
-# L2 OCS SprayPoint Routing
+# L2 OCS SprayPoint 路由
 
-SprayPoint is one of the cross-group L2 OCS routing modes in the Huawei topology. It runs on the coupled logical OCS graph described in `03_l2_ocs_graph.md`.
+`SprayPoint` 是 Huawei 拓扑中用于跨 group L2 OCS 流量的一种路由模式。它运行在 `03_l2_ocs_graph.md` 描述的 coupled logical OCS graph 上。
 
-Implementation files:
+实现文件：
 
 ```text
 htsim/sim/datacenter/huawei_ocs_spraypoint.h
@@ -10,23 +10,23 @@ htsim/sim/datacenter/huawei_ocs_spraypoint.cpp
 htsim/sim/datacenter/huawei_ocs_spraypoint_dump.cpp
 ```
 
-## Routing Scope
+## 路由范围
 
-SprayPoint is only used when an L1 EPS receives a packet whose destination rank is in another group:
+当 L1 EPS 收到目的 rank 在其他 group 的 packet 时，才使用 SprayPoint：
 
 ```text
 current_group != dst_group
 ```
 
-The OCS target is the destination group, not a specific destination L1 EPS:
+OCS 的目标是目的 group，而不是某个具体的目的 L1 EPS：
 
 ```text
 dst_set = all logical_node(dst_group, *, *)
 ```
 
-Once the packet reaches any logical node in `dst_group`, OCS routing stops and the Huawei L1/L0 downlink FIB delivers the packet to the destination rank.
+packet 到达 `dst_group` 中任意 logical node 后，OCS 路由结束。后续由目的 group 内的 L1/L0 下行 FIB 送到目的 rank。
 
-## Parameters
+## 参数
 
 ```text
 -huawei_ocs_mode spraypoint
@@ -37,15 +37,15 @@ Once the packet reaches any logical node in `dst_group`, OCS routing stops and t
 -huawei_ocs_seed <seed>
 ```
 
-Meaning:
+含义：
 
-- `spray_p`: waypoint expansion fanout used while building WP levels.
-- `spray_h`: number of parent next-hop candidates kept for forwarding.
-- `spray_levels`: number of waypoint levels; `auto` derives it from graph size and degree.
-- `huawei_ocs_choice`: how to choose one candidate at runtime.
-- `huawei_ocs_seed`: deterministic graph and stable random ordering seed.
+- `spray_p`: 构造 WP level 时使用的 expansion fanout。
+- `spray_h`: 转发时保留的 parent next-hop candidate 数量。
+- `spray_levels`: waypoint 层数；`auto` 会根据 graph 规模和 degree 推导。
+- `huawei_ocs_choice`: 运行时从候选中选择一个 next hop 的方式。
+- `huawei_ocs_seed`: graph 和稳定随机顺序的 seed。
 
-Default experiment values:
+默认实验值：
 
 ```text
 spray_p = 4
@@ -54,25 +54,25 @@ spray_levels = auto
 huawei_ocs_choice = packet_rr
 ```
 
-## Destination State
+## 目的端状态
 
-The router builds one destination state per `dst_group`:
+router 会为每个 `dst_group` 构造一份 destination state：
 
 ```cpp
 HuaweiOcsSprayPointDestinationState build_state(uint32_t dst_group) const;
 ```
 
-For a destination group:
+对一个目的 group：
 
 ```text
-D = all logical nodes in dst_group
+D = dst_group 内所有 logical node
 WP0 = neighbors(D) - D
 WP(level+1) = selected unassigned neighbors of WP(level)
 IR = unassigned neighbors of last WP level
 OR = all remaining nodes
 ```
 
-The implementation stores:
+实现中保存：
 
 ```cpp
 vector<vector<uint32_t>> waypoint_levels;
@@ -81,16 +81,16 @@ vector<uint32_t> outer_ring;
 vector<vector<uint32_t>> parents;
 ```
 
-## p vs h
+## p 和 h
 
-`p` is used only to build waypoint coverage:
+`p` 只用于构造 waypoint 覆盖范围：
 
 ```text
 for each node in WP(level):
     select up to p unassigned neighbors into WP(level+1)
 ```
 
-`h` is used for forwarding parent candidates:
+`h` 用于限制转发 parent 候选：
 
 ```text
 WP0 -> D                  : up to h parents
@@ -100,16 +100,16 @@ OR  -> shortest path to IR: up to h parents
 fallback -> D             : up to h parents
 ```
 
-So the runtime next-hop fanout is controlled by `h`, not `p`.
+因此运行时 next-hop fanout 由 `h` 控制，不由 `p` 控制。
 
-## Source-Only Spray
+## 源侧一次性 Spray 阶段
 
-SprayPoint has two runtime phases:
+SprayPoint 运行时有两个阶段：
 
-1. Source spray.
-2. Destination-specific pointing.
+1. 源侧 spray，也就是 source spray。
+2. 面向目的 group 的 pointing。
 
-Source spray happens once, when the packet first enters OCS routing from its source group:
+source spray 只发生一次，也就是 packet 第一次从源 group 进入 OCS 路由时：
 
 ```text
 source_step = current_group == src_group && !packet.ocs_source_sprayed()
@@ -117,9 +117,9 @@ candidates = all OCS neighbors of current logical node
 packet.mark_ocs_source_sprayed()
 ```
 
-If the packet later revisits the source group, it does not spray again. It follows pointing parents.
+如果 packet 后面又回到源 group，也不会再次 source spray，而是继续走 pointing parents。
 
-The one-shot source-spray marker lives in `Packet`:
+one-shot source-spray marker 保存在 `Packet` 中：
 
 ```cpp
 bool ocs_source_sprayed() const;
@@ -127,15 +127,15 @@ void mark_ocs_source_sprayed();
 void clear_ocs_source_sprayed();
 ```
 
-## Pointing Phase
+## Pointing 阶段
 
-After source spray, every non-destination OCS hop uses parents for the packet's destination group:
+source spray 之后，所有非目的 group 的 OCS hop 都使用当前目的 group 对应的 parents：
 
 ```text
 candidates = parents[dst_group][current_logical_node]
 ```
 
-Role-specific parent construction:
+不同角色的 parent 构造方式：
 
 ```text
 WP0:
@@ -154,9 +154,9 @@ fallback:
   parents = shortest-next-hop neighbors toward D
 ```
 
-## Candidate Selection
+## 候选选择
 
-Runtime candidate choice is selected by `-huawei_ocs_choice`:
+运行时候选选择由 `-huawei_ocs_choice` 控制：
 
 ```text
 packet_rr:
@@ -168,11 +168,11 @@ flow_hash:
   stable for a flow/entropy tuple
 ```
 
-The `packet_rr` implementation is independent of UEC path entropy. It uses a Huawei L1-local counter.
+`packet_rr` 不依赖 UEC path entropy，而是使用 Huawei L1-local counter。
 
-## Current N=8,M=4 Behavior
+## 当前 N=8,M=4 行为
 
-For the current 8192-rank experiment:
+当前 8192-rank 实验参数：
 
 ```text
 groups = 16
@@ -186,7 +186,7 @@ spray_h = 2
 spray_levels = auto -> 1
 ```
 
-The resulting SprayPoint state usually has:
+在这组配置下，SprayPoint state 通常为：
 
 ```text
 WP0 covers all non-destination logical nodes
@@ -194,17 +194,17 @@ IR = 0
 OR = 0
 ```
 
-In this configuration, source spray selects one of 64 OCS neighbors. The next OCS hop is typically already in `WP0`, so pointing uses up to 2 parents into the destination group.
+也就是说，source spray 会先在 64 个 OCS neighbor 中选择一个。下一跳通常已经处在 `WP0`，随后 pointing 阶段使用最多 2 个 parent 指向目的 group。
 
-## Data-Plane Integration
+## Data-Plane 集成
 
-The integration point is:
+集成入口：
 
 ```cpp
 HuaweiTopology::l1_special_next_hop(HuaweiSwitch* sw, Packet& pkt)
 ```
 
-For SprayPoint:
+SprayPoint 调用：
 
 ```cpp
 next_node = _spraypoint->choose_next_hop(
@@ -217,22 +217,22 @@ next_node = _spraypoint->choose_next_hop(
     choice);
 ```
 
-The logical next node is mapped back to a physical L1 EPS by preserving the current coupled member:
+logical next node 会映射回物理 L1 EPS，并保持当前 coupled member：
 
 ```cpp
 next_l1 = l1_from_logical_node(next_node, current_member)
 ```
 
-## Inspect SprayPoint State
+## 检查 SprayPoint State
 
-Build:
+编译：
 
 ```bash
 cd /home/chen/workplace/infra/HTSIM
 cmake --build htsim/sim/build --target huawei_ocs_spraypoint_dump -j 8
 ```
 
-Inspect N=8,M=4:
+查看 N=8,M=4：
 
 ```bash
 ./htsim/sim/datacenter/huawei_ocs_spraypoint_dump \
@@ -248,7 +248,7 @@ Inspect N=8,M=4:
   --spray-seed 42
 ```
 
-Run the functional test:
+运行功能测试：
 
 ```bash
 cd /home/chen/workplace/infra

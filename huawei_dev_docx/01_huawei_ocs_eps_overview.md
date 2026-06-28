@@ -1,31 +1,31 @@
-# Huawei OCS/EPS Topology Support
+# Huawei OCS/EPS 拓扑总览
 
-This document is the entry point for the Huawei OCS/EPS topology support added to HTSIM. It describes the implemented model, the main source files, and how packets are forwarded through the simulator.
+这份文档是 Huawei OCS/EPS 拓扑支持的入口。它说明当前已经实现的模型、主要源码位置、运行方式，以及后续文档的阅读顺序。
 
-## Feature Summary
+## 功能概览
 
-The Huawei topology models an 8192-rank cluster with:
+Huawei 拓扑面向 8192-rank 集群建模，当前支持：
 
-- server/tray-local direct links between ranks in the same tray;
-- multiple rank external ports, one per L0/L1 plane;
-- switch-local L0/L1 forwarding, using the same style as HTSIM fat-tree switches;
-- an L2 OCS cross-group fabric built from coupled L1 EPS logical nodes;
-- two OCS routing policies: SprayPoint and KSP;
-- per-link load sampling for topology-layer utilization analysis.
+- 同一 tray 内 rank 之间走本地直连链路；
+- 每个 rank 有多个外部端口，每个端口对应一个 L0/L1 plane；
+- L0/L1 使用 switch-local FIB 转发，不枚举端到端完整路径；
+- 跨 group 流量走 L2 OCS graph；
+- L2 OCS 支持 `SprayPoint` 和 `KSP` 两种路由模式；
+- 支持逐 link 负载采样，用于观察 L0、L1、OCS 各层负载均衡情况。
 
-Huawei mode is selected by passing a non-`off` OCS mode to `htsim_uec`:
+启用 Huawei 拓扑的方式是在 `htsim_uec` 中设置非 `off` 的 OCS 模式：
 
 ```bash
 -huawei_ocs_mode spraypoint
-# or
+# 或
 -huawei_ocs_mode ksp
 ```
 
-When Huawei mode is enabled, `main_uec.cpp` constructs `HuaweiTopology` instead of enumerating fat-tree paths.
+启用后，`main_uec.cpp` 会构造 `HuaweiTopology`，而不是使用 fat-tree 的 path enumeration。
 
-## Source Layout
+## 源码结构
 
-Core topology and switch-local forwarding:
+拓扑与 switch-local 转发：
 
 ```text
 htsim/sim/datacenter/huawei_topology.h
@@ -34,7 +34,7 @@ htsim/sim/datacenter/huawei_switch.h
 htsim/sim/datacenter/huawei_switch.cpp
 ```
 
-OCS graph and routing policies:
+OCS graph 与路由算法：
 
 ```text
 htsim/sim/datacenter/huawei_ocs_graph.h
@@ -45,7 +45,7 @@ htsim/sim/datacenter/huawei_ocs_ksp.h
 htsim/sim/datacenter/huawei_ocs_ksp.cpp
 ```
 
-Debug and inspection binaries:
+调试与检查工具：
 
 ```text
 htsim/sim/datacenter/huawei_ocs_graph_dump.cpp
@@ -53,14 +53,14 @@ htsim/sim/datacenter/huawei_ocs_spraypoint_dump.cpp
 htsim/sim/datacenter/huawei_ocs_ksp_dump.cpp
 ```
 
-Link-load sampling:
+link-load 采样：
 
 ```text
 htsim/sim/link_load_sampler.h
 htsim/sim/link_load_sampler.cpp
 ```
 
-Tests and experiments:
+测试与实验：
 
 ```text
 tests/functional/
@@ -69,24 +69,24 @@ tests/plot/
 tests/data/
 ```
 
-## Topology Model
+## 拓扑模型
 
-The current Huawei model uses ranks as simulation endpoints. A rank is equivalent to one XPU/GPU process endpoint.
+当前模型中，rank 是仿真端点，可以理解为一个 XPU/GPU process endpoint。
 
-Implemented hierarchy:
+转发层级：
 
 ```text
 rank
-  -> tray-local direct link, if src and dst are in the same tray
-  -> L0 switch for each external plane
-  -> L1 EPS switch in the same group and plane
-  -> L2 OCS logical graph for cross-group traffic
-  -> destination-group L1 EPS
-  -> destination L0
-  -> destination rank
+  -> 同 tray 本地直连链路，如果 src/dst 在同一个 tray
+  -> 每个外部 plane 对应一个 L0 switch
+  -> 同 group、同 plane 的 L1 EPS
+  -> 跨 group 时进入 L2 OCS logical graph
+  -> 目的 group 的 L1 EPS
+  -> 目的 L0
+  -> 目的 rank
 ```
 
-Important mapping rules:
+关键映射：
 
 ```text
 rank_group(rank) = rank / ranks_per_group
@@ -94,19 +94,19 @@ rank_tray(rank)  = rank / ranks_per_tray
 rank_l0(rank,p)  = rank_tray(rank) * l1_planes + p
 ```
 
-One external rank port maps to one plane:
+一个 UEC 外部端口对应一个 Huawei plane：
 
 ```text
 UEC port p -> Huawei L0 plane p
 ```
 
-Same-tray traffic bypasses the external network:
+同 tray 流量绕过外部网络：
 
 ```text
 rank_src -> local direct link -> rank_dst
 ```
 
-The default experiment uses:
+当前默认实验参数：
 
 ```text
 nodes = 8192
@@ -120,64 +120,64 @@ external_linkspeed = 100 Gbps
 local_linkspeed = 800 Gbps
 ```
 
-## Switch-Local Forwarding
+## Switch-Local 转发
 
-Huawei forwarding is not full-path enumeration.
+Huawei 拓扑不枚举端到端完整路径。
 
-The source rank route only reaches the first L0 switch:
+源端 route 只到第一跳 L0：
 
 ```text
 rank -> L0
 ```
 
-Every later hop is selected by the current switch from its local FIB:
+后续每一跳由当前 switch 的本地 FIB 或 L1 OCS resolver 决定：
 
 ```text
-L0: choose one same-plane L1 EPS candidate
-L1: choose group-local downlink, or call the OCS resolver for cross-group traffic
-OCS resolver: choose SprayPoint or KSP next hop
-destination L1/L0: route down to the destination rank
+L0: 在同 plane 的 L1 EPS 候选里选一个
+L1: 如果 dst 在本 group，走下行 FIB；否则调用 OCS resolver
+OCS resolver: 根据 SprayPoint 或 KSP 选择下一跳
+目的 group L1/L0: 下行转发到目的 rank
 ```
 
-`HuaweiSwitch` supports:
+`HuaweiSwitch` 支持：
 
 ```text
 ECMP  - hash(flow_id, pathid, switch_salt)
-RR    - packet-level round-robin for data packets; small control packets use hash
+RR    - data packet 逐包 round-robin；小控制包使用 hash
 ```
 
-The selected strategy is controlled by the existing `-strat` argument:
+策略由已有的 `-strat` 控制：
 
 ```bash
 -strat ecmp_host
 -strat ecmp_rr
 ```
 
-## OCS Routing Modes
+## OCS 路由模式
 
-Huawei OCS routing is only used at L1 when the destination rank is in a different group.
+Huawei OCS 只在 L1 EPS 处理跨 group 流量时使用。
 
-Supported modes:
+支持的模式：
 
 ```text
 -huawei_ocs_mode spraypoint
 -huawei_ocs_mode ksp
 ```
 
-Supported OCS candidate selection:
+候选选择方式：
 
 ```text
 -huawei_ocs_choice packet_rr
 -huawei_ocs_choice flow_hash
 ```
 
-`packet_rr` uses a switch-local RR counter at the L1 OCS resolver. It does not reuse UEC path entropy.
+`packet_rr` 使用 L1 OCS resolver 自己的 switch-local RR counter，不复用 UEC path entropy。
 
-`flow_hash` keeps the same flow on a stable candidate, closer to traditional ECMP hashing.
+`flow_hash` 让同一个 flow 稳定选择同一个候选，更接近传统 ECMP hashing。
 
-## Main CLI Parameters
+## 主要参数
 
-Topology:
+拓扑参数：
 
 ```text
 -nodes <N>
@@ -190,7 +190,7 @@ Topology:
 -huawei_ocs_seed <seed>
 ```
 
-Routing:
+路由参数：
 
 ```text
 -huawei_ocs_mode off|spraypoint|ksp
@@ -204,23 +204,23 @@ Routing:
 -huawei_ksp_max_paths_per_pair <limit>
 ```
 
-Link model:
+链路与队列：
 
 ```text
--linkspeed <Mbps>          # external Huawei links
--local_linkspeed <Mbps>    # same-tray direct links
+-linkspeed <Mbps>          # Huawei 外部链路
+-local_linkspeed <Mbps>    # 同 tray 本地直连链路
 -huawei_ocs_latency_ns <ns>
 -q <packets>
 ```
 
-Link-load sampling:
+link-load 采样：
 
 ```bash
 HTSIM_LINK_LOAD_SAMPLE=1
 HTSIM_LINK_LOAD_SAMPLE_US=1000
 ```
 
-Outputs:
+主要输出：
 
 ```text
 output_metrics/flowsInfo.csv
@@ -231,16 +231,16 @@ output_metrics/link_load_summary.csv
 output_metrics/link_load_by_layer.png
 ```
 
-## Build and Test
+## 编译与测试
 
-Build:
+编译：
 
 ```bash
 cd /home/chen/workplace/infra/HTSIM
 cmake --build htsim/sim/build --target htsim_uec -j 8
 ```
 
-Run functional tests:
+功能测试：
 
 ```bash
 cd /home/chen/workplace/infra
@@ -249,7 +249,7 @@ cd /home/chen/workplace/infra
 ./HTSIM/tests/functional/run_ocs_m4n8_feature_tests.sh
 ```
 
-Run the EP256 empirical experiment:
+EP256 empirical 实验：
 
 ```bash
 cd /home/chen/workplace/infra
@@ -260,11 +260,11 @@ HUAWEI_OCS_MODE=spraypoint HUAWEI_OCS_CHOICE=packet_rr SPRAY_P=4 SPRAY_H=2 \
   ./HTSIM/tests/experiments/run_deepseek_r1_empirical_full.sh
 ```
 
-## Document Map
+## 文档顺序
 
-- `01_huawei_ocs_eps_overview.md`: Entry point and source layout.
-- `02_switch_local_data_plane.md`: Switch-local forwarding and packet metadata.
-- `03_l2_ocs_graph.md`: OCS coupled graph and `M/N` formulas.
-- `04_l2_ocs_spraypoint.md`: SprayPoint forwarding state and parameters.
-- `05_l2_ocs_ksp.md`: KSP path table, packet metadata, and selection.
-- `06_8192_cluster_topology.md`: 8192-rank cluster parameter table.
+- `01_huawei_ocs_eps_overview.md`: 总览、源码位置、运行入口。
+- `02_switch_local_data_plane.md`: switch-local data plane、FIB、packet metadata。
+- `03_l2_ocs_graph.md`: OCS coupled graph 与 `M/N` 公式。
+- `04_l2_ocs_spraypoint.md`: SprayPoint 状态、参数和转发逻辑。
+- `05_l2_ocs_ksp.md`: KSP path table、packet metadata 和路径选择。
+- `06_8192_cluster_topology.md`: 8192-rank 集群参数与 EP256 实验。

@@ -24,6 +24,11 @@ bool traceFlowCompletions() {
     return enabled;
 }
 
+bool traceSpuriousPackets() {
+    static bool enabled = envFlagEnabled("HTSIM_TRACE_SPURIOUS");
+    return enabled;
+}
+
 struct FlowProgressState {
     uint64_t expected_flows = 0;
     uint8_t fastest_printed_pct = 0;
@@ -2929,7 +2934,7 @@ void UecSink::processData(UecDataPacket& pkt) {
         _nic.logReceivedData(pkt.size(), 0);
 
         uint64_t spurious_count = nextSpuriousPacketCount();
-        if (spurious_count % 10000 == 0) {
+        if (traceSpuriousPackets() && spurious_count % 10000 == 0) {
             cout << timeAsUs(_src->eventlist().now()) << " SpuriousTotal " << spurious_count
                  << " flowid " << _src->flow()->flow_id()
                  << " epsn " << pkt.epsn() << endl;

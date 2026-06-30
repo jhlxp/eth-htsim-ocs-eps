@@ -34,6 +34,7 @@ struct HuaweiTopologyConfig {
     uint32_t ranks_per_group = 0;
     uint32_t ranks_per_tray = 8;
     uint32_t l1_planes = 1;
+    uint32_t source_ports = 0;
     uint32_t l1_eps_per_l1_plane = 4;
     uint32_t ocs_degree = 0;
     uint32_t ocs_seed = 42;
@@ -52,9 +53,13 @@ struct HuaweiTopologyConfig {
     linkspeed_bps external_linkspeed = 100000000000ULL;
     linkspeed_bps local_linkspeed = 800000000000ULL;
     mem_b queue_size = 0;
+    bool enable_ecn = false;
+    mem_b ecn_threshold = 0;
     simtime_picosec link_latency = 0;
     simtime_picosec local_latency = 0;
     simtime_picosec switch_latency = 0;
+
+    std::string route_plan_path;
 };
 
 class HuaweiTopology : public Topology {
@@ -87,6 +92,16 @@ public:
     uint32_t l1_from_logical_node(uint32_t logical_node, uint32_t coupled_member) const;
 
 private:
+    struct RoutePlanEntry {
+        uint32_t flowid = 0;
+        uint32_t src = 0;
+        uint32_t dst = 0;
+        int32_t src_l0_plane = -1;
+        int32_t src_l1_id = -1;
+        int32_t dst_l1_id = -1;
+        int32_t dst_l0_plane = -1;
+    };
+
     struct CachedLink {
         Queue* queue = nullptr;
         Pipe* pipe = nullptr;
@@ -104,6 +119,7 @@ private:
     std::unordered_map<std::string, CachedLink> _links;
     std::unordered_set<std::string> _installed_routes;
     std::unordered_set<std::string> _installed_host_routes;
+    std::unordered_map<uint32_t, RoutePlanEntry> _route_plan;
 
     HuaweiOcsGraph _ocs_graph;
     std::unique_ptr<HuaweiOcsSprayPointRouter> _spraypoint;
@@ -112,6 +128,10 @@ private:
     void validate_config() const;
     void init_switches();
     void init_ocs();
+    void load_route_plan();
+    const RoutePlanEntry* route_plan_entry(uint32_t flowid, uint32_t src, uint32_t dst) const;
+    const RoutePlanEntry* route_plan_entry(uint32_t flowid) const;
+    uint32_t source_ports() const;
 
     Route* make_initial_route(uint32_t rank, uint32_t l0, uint32_t plane);
     Route* make_local_route(uint32_t src, uint32_t dst, uint32_t bundle, PacketSink* final_sink);
@@ -138,6 +158,8 @@ private:
     void install_l0_up_routes(uint32_t l0, uint32_t dst_rank);
     void install_l1_down_routes(uint32_t dst_rank);
     void install_l0_host_route(uint32_t l0, uint32_t dst_rank, int flowid, uint32_t plane, PacketSink* final_sink);
+    void install_l0_flow_route(uint32_t l0, uint32_t dst_rank, int flowid, uint32_t dst_l1);
+    void install_l1_flow_down_route(uint32_t l1, uint32_t dst_rank, int flowid, uint32_t dst_l0);
 
     Route* l1_to_l1_route(uint32_t src_l1, uint32_t dst_l1, uint32_t bundle);
 

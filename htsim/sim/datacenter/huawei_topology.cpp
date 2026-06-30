@@ -2,9 +2,14 @@
 #include "huawei_topology.h"
 
 #include <algorithm>
+#include <fstream>
+#include <iostream>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
+
+#include "ecnqueue.h"
 
 using namespace std;
 
@@ -19,6 +24,7 @@ HuaweiTopology::HuaweiTopology(const HuaweiTopologyConfig& cfg, EventList& event
 
     init_switches();
     init_ocs();
+    load_route_plan();
 }
 
 HuaweiTopology::~HuaweiTopology() {
@@ -50,6 +56,9 @@ void HuaweiTopology::validate_config() const {
     if (_cfg.l1_planes == 0) {
         throw invalid_argument("HuaweiTopology requires positive l1_planes");
     }
+    if (_cfg.source_ports > _cfg.l1_planes) {
+        throw invalid_argument("HuaweiTopology source_ports cannot exceed l1_planes");
+    }
     if (_cfg.l1_eps_per_l1_plane == 0 || _cfg.l1_eps_per_l1_plane % 2 != 0) {
         throw invalid_argument("HuaweiTopology requires even positive l1_eps_per_l1_plane");
     }
@@ -59,6 +68,122 @@ void HuaweiTopology::validate_config() const {
     if (_cfg.queue_size == 0) {
         throw invalid_argument("HuaweiTopology requires positive queue_size");
     }
+}
+
+static vector<string> huawei_split_csv_line(const string& line) {
+    vector<string> fields;
+    string field;
+    stringstream ss(line);
+    while (getline(ss, field, ',')) {
+        fields.push_back(field);
+    }
+    return fields;
+}
+
+void HuaweiTopology::load_route_plan() {
+    if (_cfg.route_plan_path.empty()) {
+        return;
+    }
+
+    ifstream in(_cfg.route_plan_path);
+    if (!in.good()) {
+        throw invalid_argument("Huawei route plan cannot be opened: " + _cfg.route_plan_path);
+    }
+
+    string header_line;
+    while (getline(in, header_line)) {
+        if (!header_line.empty() && header_line[0] != '#') {
+            break;
+        }
+    }
+    if (header_line.empty()) {
+        throw invalid_argument("Huawei route plan is empty: " + _cfg.route_plan_path);
+    }
+
+    vector<string> header = huawei_split_csv_line(header_line);
+    map<string, size_t> col;
+    for (size_t i = 0; i < header.size(); i++) {
+        col[header[i]] = i;
+    }
+    if (col.find("flowid") == col.end()) {
+        throw invalid_argument("Huawei route plan requires a flowid column");
+    }
+
+    auto parse_i64 = [](const vector<string>& fields, const map<string, size_t>& columns,
+                        const string& name, int64_t default_value) -> int64_t {
+        auto it = columns.find(name);
+        if (it == columns.end() || it->second >= fields.size() || fields[it->second].empty()) {
+            return default_value;
+        }
+        return stoll(fields[it->second]);
+    };
+
+    string line;
+    uint64_t loaded = 0;
+    while (getline(in, line)) {
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        vector<string> fields = huawei_split_csv_line(line);
+        RoutePlanEntry entry;
+        entry.flowid = static_cast<uint32_t>(parse_i64(fields, col, "flowid", 0));
+        entry.src = static_cast<uint32_t>(parse_i64(fields, col, "src", numeric_limits<int32_t>::max()));
+        entry.dst = static_cast<uint32_t>(parse_i64(fields, col, "dst", numeric_limits<int32_t>::max()));
+        entry.src_l0_plane = static_cast<int32_t>(parse_i64(fields, col, "src_l0_plane", -1));
+        entry.src_l1_id = static_cast<int32_t>(parse_i64(fields, col, "src_l1_id", -1));
+        entry.dst_l1_id = static_cast<int32_t>(parse_i64(fields, col, "dst_l1_id", -1));
+        entry.dst_l0_plane = static_cast<int32_t>(parse_i64(fields, col, "dst_l0_plane", -1));
+
+        if (entry.flowid == 0) {
+            throw invalid_argument("Huawei route plan has flowid 0");
+        }
+        if (entry.src >= _cfg.nodes || entry.dst >= _cfg.nodes) {
+            throw invalid_argument("Huawei route plan src/dst out of range for flowid "
+                                   + to_string(entry.flowid));
+        }
+        if (entry.src_l0_plane >= static_cast<int32_t>(_cfg.l1_planes)
+            || entry.dst_l0_plane >= static_cast<int32_t>(_cfg.l1_planes)) {
+            throw invalid_argument("Huawei route plan L0 plane out of range for flowid "
+                                   + to_string(entry.flowid));
+        }
+        if (entry.src_l1_id >= static_cast<int32_t>(_l1_count)
+            || entry.dst_l1_id >= static_cast<int32_t>(_l1_count)) {
+            throw invalid_argument("Huawei route plan L1 id out of range for flowid "
+                                   + to_string(entry.flowid));
+        }
+        _route_plan[entry.flowid] = entry;
+        loaded++;
+    }
+
+    cout << "#----------- HUAWEI ROUTE_PLAN begin ------------" << endl;
+    cout << "path " << _cfg.route_plan_path << endl;
+    cout << "entries " << loaded << endl;
+    cout << "#----------- HUAWEI ROUTE_PLAN END ------------" << endl;
+}
+
+const HuaweiTopology::RoutePlanEntry* HuaweiTopology::route_plan_entry(
+        uint32_t flowid, uint32_t src, uint32_t dst) const {
+    auto it = _route_plan.find(flowid);
+    if (it == _route_plan.end()) {
+        return nullptr;
+    }
+    const RoutePlanEntry& entry = it->second;
+    if (entry.src != src || entry.dst != dst) {
+        return nullptr;
+    }
+    return &entry;
+}
+
+const HuaweiTopology::RoutePlanEntry* HuaweiTopology::route_plan_entry(uint32_t flowid) const {
+    auto it = _route_plan.find(flowid);
+    if (it == _route_plan.end()) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
+uint32_t HuaweiTopology::source_ports() const {
+    return _cfg.source_ports == 0 ? _cfg.l1_planes : _cfg.source_ports;
 }
 
 void HuaweiTopology::init_switches() {
@@ -189,31 +314,69 @@ void HuaweiTopology::connect_endpoints(
         Route* routeback = make_local_route(dst, src, 0, uec_src.getPort(0));
         routeout->set_reverse(routeback);
         routeback->set_reverse(routeout);
-        for (uint32_t p = 0; p < _cfg.l1_planes; p++) {
+        for (uint32_t p = 0; p < source_ports(); p++) {
             uec_src.connectPort(p, *routeout, *routeback, uec_snk, start_time);
         }
         return;
     }
 
-    for (uint32_t p = 0; p < _cfg.l1_planes; p++) {
-        uint32_t src_l0 = rank_l0(src, p);
-        uint32_t dst_l0 = rank_l0(dst, p);
+    const RoutePlanEntry* plan = route_plan_entry(uec_src.flowId(), src, dst);
+    if (plan && plan->src_l1_id >= 0 && plan->src_l0_plane >= 0
+        && l1_plane(static_cast<uint32_t>(plan->src_l1_id))
+           != static_cast<uint32_t>(plan->src_l0_plane)) {
+        throw invalid_argument("Huawei route plan source L0 plane does not match source L1 plane for flowid "
+                               + to_string(uec_src.flowId()));
+    }
+    if (plan && plan->dst_l1_id >= 0 && plan->dst_l0_plane >= 0
+        && l1_plane(static_cast<uint32_t>(plan->dst_l1_id))
+           != static_cast<uint32_t>(plan->dst_l0_plane)) {
+        throw invalid_argument("Huawei route plan destination L0 plane does not match destination L1 plane for flowid "
+                               + to_string(uec_src.flowId()));
+    }
 
-        Route* routeout = make_initial_route(src, src_l0, p);
-        Route* routeback = make_initial_route(dst, dst_l0, p);
+    for (uint32_t plane = 0; plane < _cfg.l1_planes; plane++) {
+        install_l0_host_route(
+                rank_l0(dst, plane), dst, uec_src.flowId(), plane, uec_snk.getPort(0));
+        install_l0_host_route(
+                rank_l0(src, plane), src, uec_snk.flowId(), plane, uec_src.getPort(0));
+    }
+
+    for (uint32_t p = 0; p < source_ports(); p++) {
+        uint32_t src_plane = plan && plan->src_l0_plane >= 0
+                ? static_cast<uint32_t>(plan->src_l0_plane)
+                : (p % _cfg.l1_planes);
+        uint32_t dst_plane = plan && plan->dst_l0_plane >= 0
+                ? static_cast<uint32_t>(plan->dst_l0_plane)
+                : (p % _cfg.l1_planes);
+        uint32_t src_l0 = rank_l0(src, src_plane);
+        uint32_t dst_l0 = rank_l0(dst, dst_plane);
+
+        Route* routeout = make_initial_route(src, src_l0, src_plane);
+        Route* routeback = make_initial_route(dst, dst_l0, dst_plane);
         routeout->set_reverse(routeback);
         routeback->set_reverse(routeout);
         uec_src.connectPort(p, *routeout, *routeback, uec_snk, start_time);
 
-        install_l0_host_route(dst_l0, dst, uec_src.flowId(), p, uec_snk.getPort(p));
-        install_l0_host_route(src_l0, src, uec_snk.flowId(), p, uec_src.getPort(p));
+        install_l0_host_route(dst_l0, dst, uec_src.flowId(), dst_plane, uec_snk.getPort(p));
+        install_l0_host_route(src_l0, src, uec_snk.flowId(), src_plane, uec_src.getPort(p));
 
-        install_l0_up_routes(src_l0, dst);
+        if (plan && plan->src_l1_id >= 0) {
+            install_l0_flow_route(src_l0, dst, uec_src.flowId(),
+                                  static_cast<uint32_t>(plan->src_l1_id));
+        } else {
+            install_l0_up_routes(src_l0, dst);
+        }
         install_l0_up_routes(dst_l0, src);
     }
 
     install_l1_down_routes(dst);
     install_l1_down_routes(src);
+
+    if (plan && plan->dst_l1_id >= 0 && plan->dst_l0_plane >= 0) {
+        uint32_t dst_l0 = rank_l0(dst, static_cast<uint32_t>(plan->dst_l0_plane));
+        install_l1_flow_down_route(
+                static_cast<uint32_t>(plan->dst_l1_id), dst, uec_src.flowId(), dst_l0);
+    }
 }
 
 Route* HuaweiTopology::make_initial_route(uint32_t rank, uint32_t l0, uint32_t plane) {
@@ -295,7 +458,11 @@ HuaweiTopology::CachedLink& HuaweiTopology::get_or_create_link(
     }
 
     CachedLink link;
-    link.queue = new Queue(speed, _cfg.queue_size, _eventlist, nullptr);
+    if (_cfg.enable_ecn && _cfg.ecn_threshold > 0) {
+        link.queue = new ECNQueue(speed, _cfg.queue_size, _eventlist, nullptr, _cfg.ecn_threshold);
+    } else {
+        link.queue = new Queue(speed, _cfg.queue_size, _eventlist, nullptr);
+    }
     link.queue->setName(key);
     if (remote_endpoint) {
         link.queue->setRemoteEndpoint(remote_endpoint);
@@ -346,6 +513,22 @@ void HuaweiTopology::install_l0_up_routes(uint32_t l0, uint32_t dst_rank) {
     }
 }
 
+void HuaweiTopology::install_l0_flow_route(
+        uint32_t l0,
+        uint32_t dst_rank,
+        int flowid,
+        uint32_t dst_l1) {
+    string key = route_key("l0flow:" + to_string(flowid), l0, dst_rank, dst_l1);
+    if (!_installed_routes.insert(key).second) {
+        return;
+    }
+    Route* route = make_switch_route(
+            l0_name(l0), l1_name(dst_l1), l1_eps(dst_l1),
+            _cfg.external_linkspeed, _cfg.link_latency,
+            _l0_switches.at(l0), _l1_switches.at(dst_l1));
+    _l0_switches.at(l0)->addFlowRoute(dst_rank, flowid, route, UP);
+}
+
 void HuaweiTopology::install_l1_down_routes(uint32_t dst_rank) {
     uint32_t group = rank_group(dst_rank);
     for (uint32_t plane = 0; plane < _cfg.l1_planes; plane++) {
@@ -365,6 +548,22 @@ void HuaweiTopology::install_l1_down_routes(uint32_t dst_rank) {
     }
 }
 
+void HuaweiTopology::install_l1_flow_down_route(
+        uint32_t l1,
+        uint32_t dst_rank,
+        int flowid,
+        uint32_t dst_l0) {
+    string key = route_key("l1flow:" + to_string(flowid), l1, dst_rank, dst_l0);
+    if (!_installed_routes.insert(key).second) {
+        return;
+    }
+    Route* route = make_switch_route(
+            l1_name(l1), l0_name(dst_l0), l1_eps(l1),
+            _cfg.external_linkspeed, _cfg.link_latency,
+            _l1_switches.at(l1), _l0_switches.at(dst_l0));
+    _l1_switches.at(l1)->addFlowRoute(dst_rank, flowid, route, DOWN);
+}
+
 Route* HuaweiTopology::l1_special_next_hop_thunk(HuaweiSwitch* sw, Packet& pkt, void* context) {
     return static_cast<HuaweiTopology*>(context)->l1_special_next_hop(sw, pkt);
 }
@@ -377,11 +576,37 @@ Route* HuaweiTopology::l1_special_next_hop(HuaweiSwitch* sw, Packet& pkt) {
     uint32_t current_l1 = sw->getID();
     uint32_t current_group = l1_group(current_l1);
     uint32_t dst_group = rank_group(pkt.dst());
+    const RoutePlanEntry* strict_plan = route_plan_entry(pkt.flow_id(), pkt.src(), pkt.dst());
+    const RoutePlanEntry* flow_plan = route_plan_entry(pkt.flow_id());
+    bool source_route_packet = flow_plan
+            && flow_plan->src_l1_id >= 0
+            && flow_plan->dst_l1_id >= 0
+            && (pkt.type() == UECDATA || pkt.type() == UECRTS)
+            && pkt.dst() == flow_plan->dst;
+
+    if (source_route_packet) {
+        uint32_t target_l1 = static_cast<uint32_t>(flow_plan->dst_l1_id);
+        if (current_l1 == target_l1) {
+            if (pkt.has_ocs_ksp_route()) {
+                pkt.clear_ocs_ksp_route();
+            }
+            return nullptr;
+        }
+        pkt.set_direction(UP);
+        return l1_to_l1_route(current_l1, target_l1, 0);
+    }
+
     if (current_group == dst_group) {
         if (pkt.has_ocs_ksp_route()) {
             pkt.clear_ocs_ksp_route();
         }
         return nullptr;
+    }
+
+    if (strict_plan && strict_plan->src_l1_id >= 0 && strict_plan->dst_l1_id >= 0
+        && current_l1 == static_cast<uint32_t>(strict_plan->src_l1_id)) {
+        pkt.set_direction(UP);
+        return l1_to_l1_route(current_l1, static_cast<uint32_t>(strict_plan->dst_l1_id), 0);
     }
 
     uint32_t current_node = l1_logical_node(current_l1);

@@ -101,6 +101,7 @@ struct HuaweiOcsDataConfig {
     uint32_t ranks_per_group = 0;
     uint32_t ranks_per_tray = 0;
     uint32_t l1_planes = 1;
+    uint32_t source_ports = 0;
     uint32_t l1_eps_per_l1_plane = 4;
     uint32_t degree = 0;
     uint32_t ocs_seed = 42;
@@ -112,6 +113,7 @@ struct HuaweiOcsDataConfig {
     uint32_t ksp_seed = 42;
     uint32_t max_paths_per_pair = 100000;
     simtime_picosec link_latency = timeFromUs(1.0);
+    string route_plan_path;
 };
 
 static HuaweiOcsDataMode parse_huawei_ocs_mode(const string& value) {
@@ -171,6 +173,12 @@ static HuaweiOcsDataConfig normalize_huawei_ocs_config(
     }
     if (normalized.l1_planes == 0 || normalized.l1_eps_per_l1_plane == 0) {
         throw invalid_argument("Huawei OCS mode requires positive L1 plane parameters");
+    }
+    if (normalized.source_ports == 0) {
+        normalized.source_ports = normalized.l1_planes;
+    }
+    if (normalized.source_ports > normalized.l1_planes) {
+        throw invalid_argument("Huawei OCS source_ports cannot exceed l1_planes");
     }
     if (normalized.l1_eps_per_l1_plane % 2 != 0) {
         throw invalid_argument("Huawei OCS l1_eps_per_l1_plane must be even for coupled ports");
@@ -469,6 +477,10 @@ int main(int argc, char **argv) {
             huawei_ocs_cfg.l1_planes = atoi(argv[i+1]);
             cout << "huawei_l1_planes " << huawei_ocs_cfg.l1_planes << endl;
             i++;
+        } else if (!strcmp(argv[i],"-huawei_source_ports")) {
+            huawei_ocs_cfg.source_ports = atoi(argv[i+1]);
+            cout << "huawei_source_ports " << huawei_ocs_cfg.source_ports << endl;
+            i++;
         } else if (!strcmp(argv[i],"-huawei_l1_eps_per_l1_plane")) {
             huawei_ocs_cfg.l1_eps_per_l1_plane = atoi(argv[i+1]);
             cout << "huawei_l1_eps_per_l1_plane " << huawei_ocs_cfg.l1_eps_per_l1_plane << endl;
@@ -514,6 +526,10 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i],"-huawei_ocs_latency_ns")) {
             huawei_ocs_cfg.link_latency = timeFromNs(atof(argv[i+1]));
             cout << "huawei_ocs_latency " << timeAsNs(huawei_ocs_cfg.link_latency) << "ns" << endl;
+            i++;
+        } else if (!strcmp(argv[i],"-huawei_route_plan")) {
+            huawei_ocs_cfg.route_plan_path = argv[i+1];
+            cout << "huawei_route_plan " << huawei_ocs_cfg.route_plan_path << endl;
             i++;
         } else if (!strcmp(argv[i],"-receiver_cc_only")) {
             UecSrc::_sender_based_cc = false;
@@ -734,6 +750,9 @@ int main(int argc, char **argv) {
             ecn_low = atoi(argv[i+1]); 
             ecn_high = atoi(argv[i+2]);
             i+=2;
+        } else if (!strcmp(argv[i],"-disable_ecn")) {
+            ecn = false;
+            cout << "ECN disabled" << endl;
         } else if (!strcmp(argv[i],"-disable_trim")) {
             disable_trim = true;
             cout << "Trimming disabled, dropping instead." << endl;
@@ -1043,7 +1062,7 @@ int main(int argc, char **argv) {
             exit(1);
         }
         planes = huawei_ocs_cfg.l1_planes;
-        ports = planes;
+        ports = huawei_ocs_cfg.source_ports;
     }
 
     if (!param_queuesize_set) {
@@ -1109,10 +1128,14 @@ int main(int argc, char **argv) {
         cout << "groups " << huawei_ocs_cfg.groups << endl;
         cout << "ranks_per_group " << huawei_ocs_cfg.ranks_per_group << endl;
         cout << "ranks_per_tray " << huawei_ocs_cfg.ranks_per_tray << endl;
-        cout << "l1_planes_ports " << ports << endl;
+        cout << "l1_planes " << huawei_ocs_cfg.l1_planes << endl;
+        cout << "source_ports " << ports << endl;
         cout << "l1_eps_per_l1_plane " << huawei_ocs_cfg.l1_eps_per_l1_plane << endl;
         cout << "ocs_degree " << huawei_ocs_cfg.degree << endl;
         cout << "ocs_seed " << huawei_ocs_cfg.ocs_seed << endl;
+        cout << "route_plan_path "
+             << (huawei_ocs_cfg.route_plan_path.empty() ? "none" : huawei_ocs_cfg.route_plan_path)
+             << endl;
         cout << endl;
         cout << "[DERIVED]" << endl;
         cout << "total_trays " << huawei_total_trays << endl;
@@ -1187,6 +1210,7 @@ int main(int argc, char **argv) {
         cout << "estimated_one_way_hops " << huawei_external_one_way_hops(huawei_ocs_cfg) << endl;
         cout << "network_max_unloaded_rtt_us " << timeAsUs(network_max_unloaded_rtt) << endl;
         cout << "bdp_pkt " << bdp_pkt << endl;
+        cout << "huawei_queue_ecn see_ECN_block_below" << endl;
         cout << "#----------- HUAWEI LINK_QUEUE END ------------" << endl;
         cout << endl;
 
@@ -1252,7 +1276,7 @@ int main(int argc, char **argv) {
         }
         cout << "Setting ECN to parameters low " << ecn_low << " high " << ecn_high;
         if (huawei_mode) {
-            cout << " (Huawei queues use their own queue objects; no FatTree topo ECN table)";
+            cout << " (Huawei ECNQueue threshold uses low)";
         } else {
             cout << " enable on tor downlink " << !receiver_driven;
             topo_cfg->set_ecn_parameters(true, !receiver_driven, ecn_low, ecn_high);
@@ -1260,6 +1284,21 @@ int main(int argc, char **argv) {
         cout << endl;
         assert(ecn_low <= ecn_high);
         assert(ecn_high <= queuesize);
+        if (huawei_mode) {
+            cout << "#----------- HUAWEI ECN begin ------------" << endl;
+            cout << "enabled yes" << endl;
+            cout << "queue_type ecnqueue" << endl;
+            cout << "ecn_low_bytes " << ecn_low << endl;
+            cout << "ecn_high_bytes " << ecn_high << endl;
+            cout << "huawei_ecn_threshold_bytes " << ecn_low << endl;
+            cout << "queue_size_bytes " << queuesize << endl;
+            cout << "#----------- HUAWEI ECN END ------------" << endl;
+        }
+    } else if (huawei_mode) {
+        cout << "#----------- HUAWEI ECN begin ------------" << endl;
+        cout << "enabled no" << endl;
+        cout << "queue_type drop_tail" << endl;
+        cout << "#----------- HUAWEI ECN END ------------" << endl;
     }
 
     if (!huawei_mode) {
@@ -1289,6 +1328,7 @@ int main(int argc, char **argv) {
         hw_cfg.ranks_per_group = huawei_ocs_cfg.ranks_per_group;
         hw_cfg.ranks_per_tray = huawei_ocs_cfg.ranks_per_tray;
         hw_cfg.l1_planes = huawei_ocs_cfg.l1_planes;
+        hw_cfg.source_ports = huawei_ocs_cfg.source_ports;
         hw_cfg.l1_eps_per_l1_plane = huawei_ocs_cfg.l1_eps_per_l1_plane;
         hw_cfg.ocs_degree = huawei_ocs_cfg.degree;
         hw_cfg.ocs_seed = huawei_ocs_cfg.ocs_seed;
@@ -1308,9 +1348,12 @@ int main(int argc, char **argv) {
         hw_cfg.external_linkspeed = linkspeed;
         hw_cfg.local_linkspeed = local_linkspeed;
         hw_cfg.queue_size = queuesize;
+        hw_cfg.enable_ecn = ecn;
+        hw_cfg.ecn_threshold = ecn ? ecn_low : 0;
         hw_cfg.link_latency = huawei_ocs_cfg.link_latency;
         hw_cfg.local_latency = local_latency;
         hw_cfg.switch_latency = switch_latency;
+        hw_cfg.route_plan_path = huawei_ocs_cfg.route_plan_path;
         try {
             huawei_topology = make_unique<HuaweiTopology>(hw_cfg, eventlist);
         } catch (const exception& e) {

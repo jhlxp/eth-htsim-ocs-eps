@@ -35,6 +35,7 @@ public:
 
     void addRoute(int dst, Route* egress, packet_direction direction);
     void addHostRoute(int dst, int flowid, Route* egress);
+    void addFlowRoute(int dst, int flowid, Route* egress, packet_direction direction);
     void set_special_next_hop_resolver(Route* (*resolver)(HuaweiSwitch*, Packet&, void*), void* context);
 
     // HuaweiTopology owns the exact switch->host queue/pipe objects, so it
@@ -54,6 +55,11 @@ private:
     uint32_t _special_crt_route;
     uint32_t _hash_salt;
     unordered_map<Packet*, bool> _packets;
+    struct FlowFibEntry {
+        Route* egress = nullptr;
+        packet_direction direction = UP;
+    };
+    unordered_map<int, unordered_map<int, FlowFibEntry>> _flow_routes;
     Route* (*_special_next_hop_resolver)(HuaweiSwitch*, Packet&, void*);
     void* _special_next_hop_context;
 

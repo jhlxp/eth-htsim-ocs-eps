@@ -11,6 +11,9 @@ This directory keeps only runnable test and experiment entrypoints.
 
 ## Current Commands
 
+Detailed experiment organization and variables are in
+[`EXPERIMENTS.md`](EXPERIMENTS.md).
+
 Huawei functional checks:
 
 ```bash
@@ -20,10 +23,11 @@ cd /home/chen/workplace/infra
 ./HTSIM/tests/functional/run_ocs_m4n8_feature_tests.sh
 ```
 
-Current DeepSeek-R1 EP256 empirical experiment:
+Current DeepSeek-R1 EP256 empirical experiments:
 
 ```bash
 cd /home/chen/workplace/infra
-./HTSIM/tests/experiments/run_deepseek_r1_empirical_full.sh
+./HTSIM/tests/experiments/run_huawei_ep256_spray.sh
+./HTSIM/tests/experiments/run_huawei_ep256_ecmp.sh
+./HTSIM/tests/experiments/run_huawei_ep256_lpt.sh
 ```
-

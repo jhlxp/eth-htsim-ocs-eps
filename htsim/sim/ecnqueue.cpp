@@ -87,8 +87,9 @@ ECNQueue::completeService()
     if (_state_send==LosslessQueue::PAUSE_RECEIVED)
         _state_send = LosslessQueue::PAUSED;
     
-    //mark on deque
-    if (_queuesize > _K)
+    // Mark data payload packets only.  UEC control packets such as RTS/PULL/ACK
+    // are not expected to carry ECN_CE; receivers echo marks from data packets.
+    if (_queuesize > _K && !pkt->header_only())
         pkt->set_flags(pkt->flags() | ECN_CE);
 
     _queuesize -= pkt->size();

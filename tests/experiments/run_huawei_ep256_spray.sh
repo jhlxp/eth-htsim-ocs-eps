@@ -43,6 +43,8 @@ GENERATOR_SEED="${GENERATOR_SEED:-20260624}"
 STRAT="${STRAT:-ecmp_rr}"
 HUAWEI_OCS_MODE="${HUAWEI_OCS_MODE:-ksp}"
 HUAWEI_OCS_CHOICE="${HUAWEI_OCS_CHOICE:-packet_rr}"
+ROUTE_PLAN_ALGO="${ROUTE_PLAN_ALGO:-none}"
+HUAWEI_SOURCE_PORTS="${HUAWEI_SOURCE_PORTS:-${L1_PLANES}}"
 KSP_K="${KSP_K:-8}"
 KSP_SEED="${KSP_SEED:-42}"
 KSP_MAX_HOPS="${KSP_MAX_HOPS:-auto}"
@@ -55,14 +57,22 @@ LOCAL_LINKSPEED_MBPS="${LOCAL_LINKSPEED_MBPS:-800000}"
 LOCAL_LATENCY_NS="${LOCAL_LATENCY_NS:-200}"
 OCS_LATENCY_NS="${OCS_LATENCY_NS:-1000}"
 MTU_BYTES="${MTU_BYTES:-4150}"
-QUEUE_PKTS="${QUEUE_PKTS:-100}"
+QUEUE_PKTS="${QUEUE_PKTS:-200}"
 QUEUE_BYTES=$((QUEUE_PKTS * MTU_BYTES))
+ENABLE_ECN="${ENABLE_ECN:-1}"
+ECN_LOW_PKTS="${ECN_LOW_PKTS:-120}"
+ECN_HIGH_PKTS="${ECN_HIGH_PKTS:-160}"
+SENDER_CC_ALGO="${SENDER_CC_ALGO:-nscc}"
+TARGET_Q_DELAY_US="${TARGET_Q_DELAY_US:-auto}"
 END_US="${END_US:-60000000}"
 HTSIM_TIMEOUT_SEC="${HTSIM_TIMEOUT_SEC:-0}"
 LOG="${LOG:-htsim_${HUAWEI_OCS_MODE}_${HUAWEI_OCS_CHOICE}_${STRAT}.log}"
 PLOT="${PLOT:-1}"
 LINK_LOAD_SAMPLE="${LINK_LOAD_SAMPLE:-1}"
 LINK_LOAD_SAMPLE_US="${LINK_LOAD_SAMPLE_US:-1000}"
+LPT_LOAD_PLOT="${LPT_LOAD_PLOT:-1}"
+ACTUAL_LOAD_PLOT="${ACTUAL_LOAD_PLOT:-1}"
+ROUTE_PLAN_USER="${ROUTE_PLAN:-}"
 
 OCS_LABEL="${HUAWEI_OCS_MODE}_${HUAWEI_OCS_CHOICE}"
 if [[ "${HUAWEI_OCS_MODE}" == "ksp" ]]; then
@@ -71,11 +81,21 @@ elif [[ "${HUAWEI_OCS_MODE}" == "spraypoint" ]]; then
   OCS_LABEL="${OCS_LABEL}_p${SPRAY_P}_h${SPRAY_H}"
 fi
 
-RUN_ID="${RUN_ID:-run_$(date +%Y%m%d_%H%M%S)_huawei_${STRAT}_${OCS_LABEL}_${NODES}nodes_ep${EP_RANKS}_empirical}"
+ROUTE_LABEL=""
+if [[ "${ROUTE_PLAN_ALGO}" != "none" ]]; then
+  ROUTE_LABEL="_route${ROUTE_PLAN_ALGO}"
+fi
+
+RUN_ID="${RUN_ID:-run_$(date +%Y%m%d_%H%M%S)_huawei_${STRAT}_${OCS_LABEL}${ROUTE_LABEL}_${NODES}nodes_ep${EP_RANKS}_empirical}"
 RUN_DIR="${LOG_ROOT}/${RUN_ID}"
 DATA_DIR="${RUN_DIR}/data"
 PLOTS_DIR="${RUN_DIR}/plots"
 TM="${DATA_DIR}/deepseek_r1_ep256_empirical_aggregate.cm"
+if [[ -n "${ROUTE_PLAN_USER}" ]]; then
+  ROUTE_PLAN="${ROUTE_PLAN_USER}"
+else
+  ROUTE_PLAN="${DATA_DIR}/huawei_route_plan_${ROUTE_PLAN_ALGO}.csv"
+fi
 
 if [[ "${TOTAL_ASSIGNMENTS_PER_LAYER}" == "auto" ]]; then
   TOTAL_ASSIGNMENTS_PER_LAYER="0"
@@ -133,6 +153,9 @@ Routing:
   switch_strategy: ${STRAT}
   huawei_ocs_mode: ${HUAWEI_OCS_MODE}
   huawei_ocs_choice: ${HUAWEI_OCS_CHOICE}
+  route_plan_algo: ${ROUTE_PLAN_ALGO}
+  route_plan: ${ROUTE_PLAN}
+  huawei_source_ports: ${HUAWEI_SOURCE_PORTS}
   ksp_k: ${KSP_K}
   ksp_max_hops: ${KSP_MAX_HOPS}
   spray_p: ${SPRAY_P}
@@ -144,12 +167,19 @@ Transport:
   mtu_bytes: ${MTU_BYTES}
   queue_pkts: ${QUEUE_PKTS}
   queue_bytes_actual: ${QUEUE_BYTES}
+  enable_ecn: ${ENABLE_ECN}
+  ecn_low_pkts: ${ECN_LOW_PKTS}
+  ecn_high_pkts: ${ECN_HIGH_PKTS}
+  sender_cc_algo: ${SENDER_CC_ALGO}
+  target_q_delay_us: ${TARGET_Q_DELAY_US}
   external_linkspeed_mbps: ${EXT_LINKSPEED_MBPS}
   local_linkspeed_mbps: ${LOCAL_LINKSPEED_MBPS}
   local_latency_ns: ${LOCAL_LATENCY_NS}
   ocs_latency_ns: ${OCS_LATENCY_NS}
   link_load_sample: ${LINK_LOAD_SAMPLE}
   link_load_sample_us: ${LINK_LOAD_SAMPLE_US}
+  lpt_load_plot: ${LPT_LOAD_PLOT}
+  actual_load_plot: ${ACTUAL_LOAD_PLOT}
 
 Outputs:
   htsim_log: ${RUN_DIR}/${LOG}
@@ -160,19 +190,19 @@ Outputs:
   plots: ${PLOTS_DIR}
 EOF
 
-echo "[1/6] Build HTSIM UEC"
+echo "[1/7] Build HTSIM UEC"
 cmake --build "${BUILD_DIR}" --target htsim_uec -j "${BUILD_JOBS:-8}"
 
 if [[ "${REBUILD_DISTRIBUTION}" == "1" || "${REBUILD_DISTRIBUTION}" == "true" || ! -s "${DISTRIBUTION_CSV}" ]]; then
-  echo "[2/6] Build pooled empirical distribution CSV"
+  echo "[2/7] Build pooled empirical distribution CSV"
   python3 "${DATASET_DIR}/build_empirical_distribution.py" \
     --data-dir "${DATASET_DIR}" \
     --out "${DISTRIBUTION_CSV}"
 else
-  echo "[2/6] Use existing pooled empirical distribution CSV: ${DISTRIBUTION_CSV}"
+  echo "[2/7] Use existing pooled empirical distribution CSV: ${DISTRIBUTION_CSV}"
 fi
 
-echo "[3/6] Generate EP256 empirical all-to-all traffic matrix"
+echo "[3/7] Generate EP256 empirical all-to-all traffic matrix"
 python3 "${EXPERIMENTS_DIR}/generate_deepseek_r1_empirical.py" \
   --empirical-data-dir "${DATASET_DIR}" \
   --empirical-distribution-csv "${DISTRIBUTION_CSV}" \
@@ -192,23 +222,40 @@ python3 "${EXPERIMENTS_DIR}/generate_deepseek_r1_empirical.py" \
   --seed "${GENERATOR_SEED}" \
   "${COMBINE_ARG}"
 
+if [[ "${ROUTE_PLAN_ALGO}" != "none" ]]; then
+  echo "[4/7] Generate Huawei ${ROUTE_PLAN_ALGO} route plan"
+  python3 "${EXPERIMENTS_DIR}/generate_huawei_route_plan.py" \
+    --data-dir "${DATA_DIR}" \
+    --out "${ROUTE_PLAN}" \
+    --algorithm "${ROUTE_PLAN_ALGO}" \
+    --ranks-per-group "${RANKS_PER_GROUP}" \
+    --ranks-per-tray "${RANKS_PER_TRAY}" \
+    --l1-planes "${L1_PLANES}" \
+    --l1-eps-per-l1-plane "${L1_EPS_PER_L1_PLANE}" \
+    --seed "${OCS_SEED}"
+else
+  echo "[4/7] Skip Huawei route plan"
+fi
+
 if [[ "${PLOT}" == "1" ]]; then
-  echo "[4/6] Plot input traffic distributions"
+  echo "[5/7] Plot input traffic distributions"
   python3 "${PLOT_TOOLS_DIR}/plot_deepseek_r1_results.py" \
     --out-dir "${DATA_DIR}" \
     --run-dir "${RUN_DIR}" \
     --plots-dir "${PLOTS_DIR}"
 else
-  echo "[4/6] Skip input plots"
+  echo "[5/7] Skip input plots"
 fi
 
-echo "[5/6] Run HTSIM Huawei traffic matrix"
+echo "[6/7] Run HTSIM Huawei traffic matrix"
 echo "  tm: ${TM}"
 echo "  log: ${RUN_DIR}/${LOG}"
 echo "  nodes: ${NODES}, ep_ranks: ${EP_RANKS}, placement: ${RANK_PLACEMENT}"
 echo "  mode: ${HUAWEI_OCS_MODE}, choice: ${HUAWEI_OCS_CHOICE}, strat: ${STRAT}"
+echo "  route_plan: ${ROUTE_PLAN_ALGO}, source_ports: ${HUAWEI_SOURCE_PORTS}"
 echo "  effective_assignments_per_layer: ${EFFECTIVE_ASSIGNMENTS_PER_LAYER}"
 echo "  queue: ${QUEUE_PKTS} packets ~= ${QUEUE_BYTES} bytes"
+echo "  cc: ${SENDER_CC_ALGO}, ecn: ${ENABLE_ECN} low/high: ${ECN_LOW_PKTS}/${ECN_HIGH_PKTS} packets"
 
 if [[ "${LINK_LOAD_SAMPLE}" == "1" || "${LINK_LOAD_SAMPLE}" == "true" || "${LINK_LOAD_SAMPLE}" == "yes" ]]; then
   export HTSIM_LINK_LOAD_SAMPLE=1
@@ -226,11 +273,13 @@ HTSIM_CMD=(
   -linkspeed "${EXT_LINKSPEED_MBPS}"
   -mtu "${MTU_BYTES}"
   -q "${QUEUE_PKTS}"
+  -sender_cc_algo "${SENDER_CC_ALGO}"
   -local_tray_size "${RANKS_PER_TRAY}"
   -local_linkspeed "${LOCAL_LINKSPEED_MBPS}"
   -local_latency_ns "${LOCAL_LATENCY_NS}"
   -huawei_ocs_mode "${HUAWEI_OCS_MODE}"
   -huawei_ocs_choice "${HUAWEI_OCS_CHOICE}"
+  -huawei_source_ports "${HUAWEI_SOURCE_PORTS}"
   -huawei_ocs_groups "${GROUP_COUNT}"
   -huawei_ranks_per_group "${RANKS_PER_GROUP}"
   -huawei_ranks_per_tray "${RANKS_PER_TRAY}"
@@ -241,6 +290,30 @@ HTSIM_CMD=(
   -huawei_ocs_latency_ns "${OCS_LATENCY_NS}"
   -end "${END_US}"
 )
+
+if [[ "${ENABLE_ECN}" == "1" || "${ENABLE_ECN}" == "true" || "${ENABLE_ECN}" == "yes" ]]; then
+  if [[ "${ECN_LOW_PKTS}" != "auto" && "${ECN_HIGH_PKTS}" != "auto" ]]; then
+    HTSIM_CMD+=(
+      -ecn "${ECN_LOW_PKTS}" "${ECN_HIGH_PKTS}"
+    )
+  fi
+else
+  HTSIM_CMD+=(
+    -disable_ecn
+  )
+fi
+
+if [[ "${TARGET_Q_DELAY_US}" != "auto" ]]; then
+  HTSIM_CMD+=(
+    -target_q_delay "${TARGET_Q_DELAY_US}"
+  )
+fi
+
+if [[ "${ROUTE_PLAN_ALGO}" != "none" ]]; then
+  HTSIM_CMD+=(
+    -huawei_route_plan "${ROUTE_PLAN}"
+  )
+fi
 
 case "${HUAWEI_OCS_MODE}" in
   ksp)
@@ -271,11 +344,23 @@ fi
 echo "Done: ${RUN_DIR}/${LOG}"
 
 if [[ "${PLOT}" == "1" ]]; then
-  echo "[6/6] Plot final HTSIM result summaries"
+  echo "[7/7] Plot final HTSIM result summaries"
   python3 "${PLOT_TOOLS_DIR}/plot_deepseek_r1_results.py" \
     --out-dir "${DATA_DIR}" \
     --run-dir "${RUN_DIR}" \
     --plots-dir "${PLOTS_DIR}"
 else
-  echo "[6/6] Skip final plots"
+  echo "[7/7] Skip final plots"
+fi
+
+if [[ "${ROUTE_PLAN_ALGO}" == "lpt" && ( "${LPT_LOAD_PLOT}" == "1" || "${LPT_LOAD_PLOT}" == "true" || "${LPT_LOAD_PLOT}" == "yes" ) ]]; then
+  echo "      Plot LPT theoretical route-plan EPS/OCS load analysis"
+  python3 "${PLOT_TOOLS_DIR}/plot_huawei_lpt_loads.py" \
+    --run-dir "${RUN_DIR}"
+fi
+
+if [[ ( "${ACTUAL_LOAD_PLOT}" == "1" || "${ACTUAL_LOAD_PLOT}" == "true" || "${ACTUAL_LOAD_PLOT}" == "yes" ) && -s "${RUN_DIR}/output_metrics/link_load_1ms.csv" ]]; then
+  echo "      Plot actual sampled Huawei EPS/OCS load analysis"
+  python3 "${PLOT_TOOLS_DIR}/plot_huawei_actual_loads.py" \
+    --run-dir "${RUN_DIR}"
 fi

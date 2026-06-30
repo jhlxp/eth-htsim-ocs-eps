@@ -102,6 +102,13 @@ void HuaweiSwitch::addHostRoute(int dst, int flowid, Route* egress) {
     _fib->addHostRoute(dst, egress, flowid);
 }
 
+void HuaweiSwitch::addFlowRoute(int dst, int flowid, Route* egress, packet_direction direction) {
+    if (!egress) {
+        throw invalid_argument("HuaweiSwitch::addFlowRoute got null egress route");
+    }
+    _flow_routes[dst][flowid] = FlowFibEntry{egress, direction};
+}
+
 void HuaweiSwitch::set_special_next_hop_resolver(
         Route* (*resolver)(HuaweiSwitch*, Packet&, void*),
         void* context) {
@@ -137,6 +144,15 @@ Route* HuaweiSwitch::getNextHop(Packet& pkt, BaseQueue* ingress_port) {
         Route* special = _special_next_hop_resolver(this, pkt, _special_next_hop_context);
         if (special) {
             return special;
+        }
+    }
+
+    auto dst_it = _flow_routes.find(pkt.dst());
+    if (dst_it != _flow_routes.end()) {
+        auto flow_it = dst_it->second.find(pkt.flow_id());
+        if (flow_it != dst_it->second.end()) {
+            pkt.set_direction(flow_it->second.direction);
+            return flow_it->second.egress;
         }
     }
 

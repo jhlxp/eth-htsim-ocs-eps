@@ -58,5 +58,17 @@ tests/data/empirical_pooled_distribution_plot.png
 !example_validate.json
 !tests/data/empirical_pooled_distribution.csv
 
+# LaTeX build products
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.xdv
+*.synctex.gz
+
+# Generated theory-model result directories
+huawei_dev_docx/solution/*_results/
+
 # Validation traffic matrices
 **/validation/**/*.cm

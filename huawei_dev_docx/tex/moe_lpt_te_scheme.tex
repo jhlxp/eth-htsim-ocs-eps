@@ -1,0 +1,411 @@
+\documentclass[UTF8,a4paper,11pt,fontset=none]{ctexart}
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{caption}
+\usepackage{fancyhdr}
+
+\setCJKmainfont{Noto Serif CJK SC}
+\setCJKsansfont{Noto Sans CJK SC}
+\setCJKmonofont{Noto Sans CJK SC}
+\setCJKfamilyfont{heiti}{Noto Sans CJK SC}
+\newcommand{\heiti}{\CJKfamily{heiti}}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  urlcolor=blue!55!black,
+  citecolor=blue!55!black
+}
+
+\setlist[itemize]{leftmargin=2em}
+\setlist[enumerate]{leftmargin=2em}
+\captionsetup{font=small}
+\graphicspath{{../solution/lpt_pod_local_results/}{../solution/lpt_results/}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\setlength{\headheight}{14pt}
+
+\title{\heiti MoE AlltoAllV 单路径场景下的 Pod-Local LPT 源路由方案}
+\author{HTSIM Huawei OCS/EPS 仿真项目}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文给出一个面向 MoE dispatch / AlltoAllV 通信的源路由流量工程方案。
+方案不改变 MoE router、expert placement 或 EPLB 等端侧专家负载均衡算法，
+也不假设 packet spray 可用；它只利用一次 MoE dispatch 前已知的 flow size 矩阵，
+为每条 single-flow 选择源侧 L0/L1 EPS 和目的侧 L0/L1 EPS。
+核心算法为 Longest Processing Time first（LPT）贪婪装箱。
+进一步地，本文把发送侧和接收侧解耦：按 source pod 独立计算发送侧 LPT，
+按 destination pod 独立计算接收侧 LPT，最后把每条 flow 的源 L1 EPS 与目的 L1 EPS
+组合成 OCS 源路由端点。理论建模显示，在 EP256、65172 条 flow、111.562 GiB 单层
+dispatch-only 流量下，该方案可以把每个 pod 内的发送/接收 L1-EPS 负载打到
+max/mean 约 1.000x；16pod 场景下 pod-local 并行求解 wall-time 约 1.48 ms。
+\end{abstract}
+
+\section{背景与目标}
+
+MoE 推理中的 dispatch 阶段通常表现为 AlltoAllV：每个 EP rank 根据本地 token 的 top-$k$
+路由结果，把不同大小的数据发送给其他 rank 上的专家。已有的 MoE 负载均衡方法，
+例如 expert placement、EPLB 或 router-level balancing，主要优化专家热度、token 分布或设备算力负载。
+本文关注另一个正交问题：当 AlltoAllV 流量矩阵已经确定后，如何在网络侧更均衡地使用
+pod 内的 L0/L1 EPS 资源。
+
+本文不优化端侧 MoE router，也不依赖 packet spray。我们假设通信库在正式发送前能够获得每条
+message/flow 的大小，并可以为每条 flow 指定一条单路径。目标是利用源路由或等价 metadata，
+让源侧和目的侧的 L1-EPS 负载都尽量均衡。
+
+\section{拓扑抽象与问题分解}
+
+当前 Huawei OCS/EPS 8192 rank 拓扑的抽象如下：
+
+\begin{itemize}
+  \item 集群规模：8192 ranks，16 个 pod/group，每个 pod 512 ranks。
+  \item 每个 tray：8 ranks。
+  \item 每个 tray 对应 4 个并行 L0 plane，即 4 个候选 L0-EPS。
+  \item 每个 pod 内有 4 个 L1 plane，每个 plane 有 4 个 L1-EPS，因此每个 pod 有 16 个 L1-EPS。
+\end{itemize}
+
+一次 flow 的路径可以抽象为：
+
+\[
+  \mathrm{src\ rank}
+  \rightarrow \mathrm{src\ L0}
+  \rightarrow \mathrm{src\ L1}
+  \rightarrow \mathrm{OCS}
+  \rightarrow \mathrm{dst\ L1}
+  \rightarrow \mathrm{dst\ L0}
+  \rightarrow \mathrm{dst\ rank}.
+\]
+
+这里有两个可以解耦的装箱问题：
+
+\begin{enumerate}
+  \item \textbf{发送侧装箱：} 对同一个 source pod 内发出的 flow，选择源侧 L0/L1 EPS。
+  \item \textbf{接收侧装箱：} 对同一个 destination pod 内接收的 flow，选择目的侧 L0/L1 EPS。
+\end{enumerate}
+
+两者可以隔离计算。原因是源侧 LPT 只影响 flow 从源 tray/pod 出口如何分摊，
+目的侧 LPT 只影响 flow 到达目的 pod 后如何落到目的 L1/L0；
+OCS 中间段在本文模型中被看作源 L1 到目的 L1 的直连管道。换句话说，
+一条 flow 最终只需要组合出一个二元组：
+
+\[
+  ( \mathrm{src\ L1\ EPS},\ \mathrm{dst\ L1\ EPS} ).
+\]
+
+\section{Pod-Local LPT 算法}
+
+\subsection{输入与输出}
+
+输入为一次 MoE dispatch 对应的 AlltoAllV flow 集合：
+
+\[
+  \mathcal{F} = \{(s_i, d_i, b_i)\}_{i=1}^{N_f},
+\]
+
+其中 $s_i$ 是源 EP rank，$d_i$ 是目的 EP rank，$b_i$ 是该 message 的字节数。
+本文实验中 $N_f=65172$。
+
+输出为每条 flow 的源路由决策：
+
+\[
+  (s_i, d_i, b_i) \mapsto
+  (\mathrm{src\ L0}_i,\ \mathrm{src\ L1}_i,\ \mathrm{dst\ L1}_i,\ \mathrm{dst\ L0}_i).
+\]
+
+\subsection{发送侧 LPT}
+
+按 source pod 将 flow 分桶。对每个 pod 内的 flow，按 $b_i$ 从大到小排序，
+然后执行 LPT：
+
+\begin{enumerate}
+  \item 根据源 rank 找到源 tray。
+  \item 在源 tray 对应的 4 个 L0-EPS 中选择当前发送累计负载最小者。
+  \item 根据选中的 L0 plane，在源 pod 同 plane 的 4 个 L1-EPS 中选择当前发送累计负载最小者。
+  \item 将该 flow 的 $b_i$ 加到选中的源 L0-EPS 和源 L1-EPS 负载上。
+\end{enumerate}
+
+\subsection{接收侧 LPT}
+
+按 destination pod 将 flow 分桶。对每个 pod 内的 flow，同样按 $b_i$ 从大到小排序，
+然后执行 LPT：
+
+\begin{enumerate}
+  \item 根据目的 rank 找到目的 tray。
+  \item 在目的 tray 对应的 4 个 L0-EPS 中选择当前接收累计负载最小者。
+  \item 在目的 pod 的 16 个 L1-EPS 中选择当前接收累计负载最小者。
+  \item 将该 flow 的 $b_i$ 加到选中的目的 L0-EPS 和目的 L1-EPS 负载上。
+\end{enumerate}
+
+发送侧和接收侧的计算可以并行执行。以 16pod 部署为例，可以拆成 16 个发送侧任务和 16 个接收侧任务。
+每个任务只处理自己 pod 内相关的 flow，因此排序规模更小，工程上也更容易分布式落地。
+
+\subsection{EP 组内控制面落地}
+
+该方案依赖的控制面只在 EP 组内发生：
+
+\begin{enumerate}
+  \item 每个 EP rank 本地计算本轮 dispatch 的 sendcounts。
+  \item EP rank0 或指定 master rank 收集 $256\times256$ sendcounts，构造完整 flow 矩阵。
+  \item master rank 运行发送侧和接收侧 LPT，得到每个 flow 的路径端点。
+  \item master rank 将每个源 rank 需要执行的 flow-to-path 切片下发给对应 rank。
+  \item 各 rank 按调度表执行真正的数据面通信。
+\end{enumerate}
+
+这不要求集群级中心控制器；它利用的是 MoE collective 本身的通信域。
+参与 AlltoAllV 的 EP ranks 原本就需要互相通信，因此在正式数据面传输前增加一个短控制阶段是可行的。
+
+\section{理论建模设置}
+
+理论模型使用真实专家访问热度分布生成 EP256 单层 dispatch-only AlltoAllV：
+
+\begin{itemize}
+  \item EP ranks：256。
+  \item tokens per rank：4096。
+  \item top-$k$：8。
+  \item hidden size：7168。
+  \item dtype bytes：2。
+  \item flow 数：65172。
+  \item 总流量：111.562 GiB。
+  \item 部署方式：256 个 active ranks 随机落入 2/4/8/16 个 pod，用于模拟碎片化部署。
+\end{itemize}
+
+本文主要展示 pod-local LPT 结果。为了对比求解开销，也保留一个 baseline：
+``全局一遍 LPT''，即把所有 flow 放到一个全局排序中，一次遍历同时决定发送侧和接收侧。
+由于资源集合本质上仍按 pod/tray 隔离，全局一遍 LPT 与 pod-local LPT 的负载均衡结果一致；
+区别主要体现在求解方式和 wall-time。
+
+\section{负载均衡结果}
+
+\begin{table}[H]
+\centering
+\caption{Pod-local LPT 后的发送/接收负载均衡结果，数值为 max/mean}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{rrrrrrrr}
+\toprule
+active pods & src L0 tray & dst L0 tray & src L1 pod & dst L1 pod & src L1 global & dst L1 global & dst L1 max GiB \\
+\midrule
+16 & 1.000114 & 1.003724 & 1.000069 & 1.000285 & 1.438551 & 2.397310 & 1.045 \\
+8  & 1.000104 & 1.003533 & 1.000052 & 1.000065 & 1.255733 & 1.736436 & 1.513 \\
+4  & 1.000085 & 1.003128 & 1.000036 & 1.000018 & 1.116112 & 1.355213 & 2.362 \\
+2  & 1.000053 & 1.002207 & 1.000023 & 1.000002 & 1.048954 & 1.029916 & 3.591 \\
+\bottomrule
+\end{tabular}
+}
+\label{tab:balance}
+\end{table}
+
+表 \ref{tab:balance} 中，``src L1 pod'' 和 ``dst L1 pod'' 是最关键的指标。
+可以看到，在每个 pod 内，发送侧和接收侧 L1-EPS 都接近完全均衡。L1 global 不为 1 是正常的：
+不同 pod 内 active rank 数、热点专家分布和总收发量本来就不同，本文目标不是强行让不同 pod 的总量相同，
+而是在每个 pod 内打平 L1-EPS。
+
+L0 的全局负载不要求均衡，因为不同 tray 的流量由模型热点决定；真正需要检查的是 tray 内 4 个 L0 plane
+是否均衡。表中 src/dst L0 tray 均接近 1，说明每个 tray 内的并行 L0-EPS 已被有效打平。
+
+\section{OCS L1-to-L1 矩阵}
+
+发送侧和接收侧 LPT 组合后，会形成跨 pod 的源 L1 到目的 L1 连接矩阵。
+OCS 中间链路在本文中不作为装箱约束，但我们仍然输出矩阵用于观察。
+
+\begin{table}[H]
+\centering
+\caption{Detail trial 的 OCS 跨 pod L1-to-L1 矩阵统计}
+\begin{tabular}{rrrrrr}
+\toprule
+active pods & active L1 pairs & mean GiB & max GiB & max/mean & max flow count \\
+\midrule
+16 & 37818 & 0.0028 & 0.0635 & 22.9805 & 8  \\
+8  & 13910 & 0.0070 & 0.0833 & 11.9196 & 19 \\
+4  & 3072  & 0.0273 & 0.1278 & 4.6841  & 32 \\
+2  & 512   & 0.1090 & 0.2486 & 2.2801  & 84 \\
+\bottomrule
+\end{tabular}
+\label{tab:ocs}
+\end{table}
+
+16pod 场景下 OCS pair 的 max/mean 较大，是因为 active pair 数量很多，均值非常小；
+绝对最大值只有 0.0635 GiB。随着 active pod 数减少，每个 L1 pair 的平均流量增加，
+矩阵相对更稠密，max/mean 也下降。
+
+\section{求解时间}
+
+\subsection{方案 A：全局一遍 LPT}
+
+全局一遍 LPT 把所有 flow 统一排序，然后在一次遍历中同时决定 src/dst L0/L1。
+它的优点是逻辑简单；缺点是没有利用 pod 间天然隔离的并行性。
+
+\subsection{方案 B：Pod-local 双端 LPT}
+
+Pod-local 双端 LPT 把发送侧和接收侧隔离：
+
+\begin{itemize}
+  \item 发送侧：按 source pod 分桶，16pod 时有 16 个独立任务。
+  \item 接收侧：按 destination pod 分桶，16pod 时有 16 个独立任务。
+  \item 任务之间没有共享状态，可以并行执行。
+  \item 每个 flow 最终用 flow id 把源侧选择和目的侧选择合并。
+\end{itemize}
+
+表 \ref{tab:time} 对比两种方案。Pod-local 的 CPU time 是所有小任务耗时求和；
+wall-time 是多线程并行后的实际核心耗时，更接近实际控制面求解延迟。
+
+\begin{table}[H]
+\centering
+\caption{65172 条 flow 的 LPT core 求解时间}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{rrrrrr}
+\toprule
+active pods & global wall ms & pod-local wall ms & pod-local CPU ms & src CPU ms & dst CPU ms \\
+\midrule
+16 & 3.6446 & 1.4809 & 15.4834 & 6.9414 & 8.5420 \\
+8  & 3.5889 & 1.7055 & 15.7424 & 7.0960 & 8.6464 \\
+4  & 3.5376 & 2.7120 & 16.3733 & 7.6371 & 8.7363 \\
+2  & 3.5026 & 4.7403 & 16.2500 & 7.4050 & 8.8450 \\
+\bottomrule
+\end{tabular}
+}
+\label{tab:time}
+\end{table}
+
+可以看到，16pod 和 8pod 场景下，pod-local 并行求解明显快于全局一遍 LPT。
+2pod 场景下，由于可并行任务数少，而发送/接收仍要做两套局部排序，wall-time 反而更高。
+这说明 pod-local 方案最适合碎片化部署到多个 pod 的场景。
+
+\section{图示结果}
+
+图 \ref{fig:src-dst-l1-4pod} 展示 4pod 场景下每个 pod 内 16 个 L1-EPS 的发送负载和接收负载。
+可以看到，发送侧和接收侧在 pod 内都非常均匀。
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.98\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{src_l1_load_by_pod_pods4_trial0.png}
+    \caption{Source L1 EPS 发送负载}
+  \end{subfigure}
+  \vspace{0.5em}
+  \begin{subfigure}{0.98\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{dst_l1_load_by_pod_pods4_trial0.png}
+    \caption{Destination L1 EPS 接收负载}
+  \end{subfigure}
+  \caption{4pod 场景下 pod 内 L1-EPS 发送/接收负载}
+  \label{fig:src-dst-l1-4pod}
+\end{figure}
+
+图 \ref{fig:ocs-4pod} 展示 4pod 场景下源 L1 到目的 L1 的 OCS 跨 pod 矩阵。
+这个矩阵用于观察跨 pod L1-to-L1 的实际负载分布；本文模型不把 OCS 作为额外约束。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.82\linewidth]{l1_ocs_crosspod_matrix_pods4_trial0.png}
+  \caption{4pod 场景下 OCS L1-to-L1 跨 pod 负载矩阵}
+  \label{fig:ocs-4pod}
+\end{figure}
+
+\section{工程风险与后续工作}
+
+\begin{itemize}
+  \item \textbf{通信库接口：} 标准 NCCL API 不能直接表达逐 flow 源路由；
+  需要 HCCL、NCCL net plugin、RDMA/QP 或厂商网络栈配合。
+  \item \textbf{调度表一致性：} master rank 下发调度表后，所有 rank 必须使用一致的 flow ID 与路径 ID 编码。
+  \item \textbf{控制面延迟：} EP256 场景下求解开销为毫秒级，但仍需把 gather/scatter sendcounts 的耗时一起评估。
+  \item \textbf{OCS 约束扩展：} 当前 OCS 只作为源 L1 到目的 L1 的直连观察矩阵。
+  若后续 OCS 链路也成为瓶颈，需要把 OCS pair 或 path load 纳入装箱目标。
+\end{itemize}
+
+\section{结论}
+
+在不改 MoE 端侧负载均衡、不依赖 packet spray 的前提下，
+基于 AlltoAllV flow 矩阵的 pod-local LPT 源路由可以作为一个可落地的网络侧流量工程方案。
+它把发送侧和接收侧分离成多个 pod-local 小问题，再通过 flow id 合并成最终源路由。
+理论结果显示，该方案能在 pod 内把发送和接收 L1-EPS 负载都打到近乎完全均衡；
+在 16pod 场景下，65172 条 flow 的并行求解 wall-time 约 1.48 ms。
+下一步应在 HCCL/定制通信库或 RDMA 层验证调度表到真实 L0/L1 路径选择的映射。
+
+\appendix
+\section{完整图示}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\linewidth]{src_l0_load_by_pod_pods4_trial0.png}
+  \caption{4pod 场景下 Source L0 EPS 发送负载}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\linewidth]{dst_l0_load_by_pod_pods4_trial0.png}
+  \caption{4pod 场景下 Destination L0 EPS 接收负载}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\linewidth]{src_l1_load_by_pod_pods2_trial0.png}
+  \caption{2pod 场景下 Source L1 EPS 发送负载}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\linewidth]{dst_l1_load_by_pod_pods2_trial0.png}
+  \caption{2pod 场景下 Destination L1 EPS 接收负载}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\linewidth]{src_l1_load_by_pod_pods8_trial0.png}
+  \caption{8pod 场景下 Source L1 EPS 发送负载}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\linewidth]{dst_l1_load_by_pod_pods8_trial0.png}
+  \caption{8pod 场景下 Destination L1 EPS 接收负载}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\linewidth]{src_l1_load_by_pod_pods16_trial0.png}
+  \caption{16pod 场景下 Source L1 EPS 发送负载}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\linewidth]{dst_l1_load_by_pod_pods16_trial0.png}
+  \caption{16pod 场景下 Destination L1 EPS 接收负载}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.82\linewidth]{l1_ocs_crosspod_matrix_pods2_trial0.png}
+  \caption{2pod 场景下 OCS L1-to-L1 跨 pod 负载矩阵}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.82\linewidth]{l1_ocs_crosspod_matrix_pods8_trial0.png}
+  \caption{8pod 场景下 OCS L1-to-L1 跨 pod 负载矩阵}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.82\linewidth]{l1_ocs_crosspod_matrix_pods16_trial0.png}
+  \caption{16pod 场景下 OCS L1-to-L1 跨 pod 负载矩阵}
+\end{figure}
+
+\end{document}
